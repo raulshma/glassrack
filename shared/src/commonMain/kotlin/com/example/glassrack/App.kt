@@ -10,6 +10,7 @@ fun App(
     deepLinkDestination: String? = null,
     dynamicSeedColor: Color? = null,
     onConsumeDeepLink: () -> Unit = {},
+    onDarkThemeChanged: (Boolean) -> Unit = {},
 ) {
     initGlassrackKoin()
     GlassrackApp(
@@ -17,5 +18,6 @@ fun App(
         deepLinkDestination = deepLinkDestination,
         dynamicSeedColor = dynamicSeedColor,
         onConsumeDeepLink = onConsumeDeepLink,
+        onDarkThemeChanged = onDarkThemeChanged,
     )
 }

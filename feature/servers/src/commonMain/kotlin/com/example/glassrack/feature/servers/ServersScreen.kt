@@ -1,7 +1,9 @@
 package com.example.glassrack.feature.servers
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,42 +17,53 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.DeveloperBoard
+import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lan
+import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RestartAlt
-import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Thermostat
+import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -64,19 +77,33 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.glassrack.core.designsystem.ActionSafetyDialog
+import com.example.glassrack.core.designsystem.ExpressiveBadgeShape
+import com.example.glassrack.core.designsystem.ExpressiveCard
+import com.example.glassrack.core.designsystem.ExpressiveEmptyState
+import com.example.glassrack.core.designsystem.ExpressiveGroupedCard
+import com.example.glassrack.core.designsystem.ExpressiveGroupedItem
+import com.example.glassrack.core.designsystem.ExpressiveHeroCard
+import com.example.glassrack.core.designsystem.ExpressiveIconTile
+import com.example.glassrack.core.designsystem.ExpressiveSearchField
+import com.example.glassrack.core.designsystem.ExpressiveSectionHeader
+import com.example.glassrack.core.designsystem.ExpressiveSegmentedPillGroup
+import com.example.glassrack.core.designsystem.ExpressiveShapeBadge
 import com.example.glassrack.core.designsystem.LocalGlassrackDesign
-import com.example.glassrack.core.designsystem.RackBladeCard
 import com.example.glassrack.core.designsystem.StatusBeacon
 import com.example.glassrack.core.designsystem.VicoSparkline
 import com.example.glassrack.core.designsystem.VicoTelemetryChart
 import com.example.glassrack.core.designsystem.WavyMetricBar
+import com.example.glassrack.core.designsystem.expressiveHorizontalGroupShape
+import com.example.glassrack.core.designsystem.monoNumericStyle
 import com.example.glassrack.core.model.AuthType
+import com.example.glassrack.core.model.ConfirmationLevel
 import com.example.glassrack.core.model.Formatters
 import com.example.glassrack.core.model.HostKeyChallenge
 import com.example.glassrack.core.model.Server
@@ -96,35 +123,54 @@ fun ServersScreen(
     onSelectServer: (String?) -> Unit,
     onOpenTerminal: (String, String?) -> Unit,
     modifier: Modifier = Modifier,
+    initialOpenAddSheet: Boolean = false,
+    onConsumedOpenAddSheet: () -> Unit = {},
     viewModel: ServersViewModel = koinViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
     var showAddEditWizard by remember { mutableStateOf<Server?>(null) }
     var isNewWizard by remember { mutableStateOf(false) }
 
+    LaunchedEffect(initialOpenAddSheet) {
+        if (initialOpenAddSheet) {
+            isNewWizard = true
+            showAddEditWizard = Server(
+                id = "srv-${Random.nextInt(10000, 99999)}",
+                name = "",
+                primaryHost = "",
+            )
+            onConsumedOpenAddSheet()
+        }
+    }
+
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isWide = maxWidth >= 780.dp
         if (isWide) {
-            Row(Modifier.fillMaxSize()) {
-                ServersInventoryPane(
-                    state = state,
-                    selectedId = selectedServerId,
-                    onSearch = viewModel::setSearch,
-                    onTag = viewModel::setSelectedTag,
-                    onSelect = onSelectServer,
-                    onOpenTerminal = { onOpenTerminal(it, null) },
-                    onWake = viewModel::wakeServer,
-                    onAddClick = {
-                        isNewWizard = true
-                        showAddEditWizard = Server(
-                            id = "srv-${Random.nextInt(10000, 99999)}",
-                            name = "",
-                            primaryHost = "",
-                        )
-                    },
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
                     modifier = Modifier.width(360.dp).fillMaxHeight(),
-                )
-                HorizontalDivider(modifier = Modifier.width(1.dp).fillMaxHeight())
+                ) {
+                    ServersInventoryPane(
+                        state = state,
+                        selectedId = selectedServerId,
+                        onSearch = viewModel::setSearch,
+                        onTag = viewModel::setSelectedTag,
+                        onSelect = onSelectServer,
+                        onAddClick = {
+                            isNewWizard = true
+                            showAddEditWizard = Server(
+                                id = "srv-${Random.nextInt(10000, 99999)}",
+                                name = "",
+                                primaryHost = "",
+                            )
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
                 val activeRuntime = state.servers.firstOrNull { it.server.id == selectedServerId }
                     ?: state.servers.firstOrNull()
                 if (activeRuntime != null) {
@@ -145,6 +191,26 @@ fun ServersScreen(
                         viewModel = viewModel,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
+                } else {
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxHeight().padding(24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        ExpressiveEmptyState(
+                            icon = Icons.Rounded.Dns,
+                            title = "Select or Add a Node",
+                            description = "Choose a server from the inventory or onboard a new SSH host to inspect live telemetry.",
+                            actionLabel = "Onboard SSH Node",
+                            onAction = {
+                                isNewWizard = true
+                                showAddEditWizard = Server(
+                                    id = "srv-${Random.nextInt(10000, 99999)}",
+                                    name = "",
+                                    primaryHost = "",
+                                )
+                            },
+                        )
+                    }
                 }
             }
         } else {
@@ -156,8 +222,6 @@ fun ServersScreen(
                     onSearch = viewModel::setSearch,
                     onTag = viewModel::setSelectedTag,
                     onSelect = onSelectServer,
-                    onOpenTerminal = { onOpenTerminal(it, null) },
-                    onWake = viewModel::wakeServer,
                     onAddClick = {
                         isNewWizard = true
                         showAddEditWizard = Server(
@@ -223,14 +287,15 @@ private fun ServersInventoryPane(
     onSearch: (String) -> Unit,
     onTag: (String) -> Unit,
     onSelect: (String) -> Unit,
-    onOpenTerminal: (String) -> Unit,
-    onWake: (Server) -> Unit,
     onAddClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val design = LocalGlassrackDesign.current
     val allTags = remember(state.servers) {
-        listOf("All") + state.servers.flatMap { listOf(it.server.groupTag) + it.server.tags }.distinct().sorted()
+        listOf("All") + state.servers.flatMap { listOf(it.server.groupTag) + it.server.tags }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
     }
     val filtered = remember(state.servers, state.searchQuery, state.selectedTag) {
         val q = state.searchQuery.trim().lowercase()
@@ -241,6 +306,8 @@ private fun ServersInventoryPane(
             val qOk = q.isEmpty() ||
                 rt.server.name.lowercase().contains(q) ||
                 rt.server.primaryHost.lowercase().contains(q) ||
+                rt.server.groupTag.lowercase().contains(q) ||
+                rt.server.tags.any { it.lowercase().contains(q) } ||
                 rt.server.notes.lowercase().contains(q)
             tagOk && qOk
         }
@@ -248,116 +315,274 @@ private fun ServersInventoryPane(
 
     Column(modifier = modifier) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
-                Text("Rack Nodes", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("${state.servers.size} configured servers", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    text = "Nodes",
+                    style = MaterialTheme.typography.displaySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
+                    Text(
+                        text = "${state.servers.size} nodes",
+                        style = MaterialTheme.typography.labelMedium.merge(design.monoNumericStyle),
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
             }
-            Button(onClick = onAddClick) {
-                Icon(Icons.Rounded.Add, null, modifier = Modifier.size(18.dp))
+            FilledTonalButton(
+                onClick = onAddClick,
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("Add Node")
             }
         }
 
-        OutlinedTextField(
-            value = state.searchQuery,
-            onValueChange = onSearch,
-            placeholder = { Text("Search host, IP, or tag...") },
-            leadingIcon = { Icon(Icons.Rounded.Search, null) },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        ExpressiveSearchField(
+            query = state.searchQuery,
+            onQueryChange = onSearch,
+            placeholder = "Search nodes, tags, or hosts...",
+            modifier = Modifier.padding(horizontal = 16.dp),
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            allTags.forEach { tag ->
-                FilterChip(
-                    selected = state.selectedTag == tag,
-                    onClick = { onTag(tag) },
-                    label = { Text(tag) },
-                )
+        if (allTags.size > 1) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                allTags.forEach { tag ->
+                    val selected = state.selectedTag == tag
+                    Surface(
+                        onClick = { onTag(tag) },
+                        shape = RoundedCornerShape(999.dp),
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        contentColor = if (selected) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    ) {
+                        Text(
+                            text = tag,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        )
+                    }
+                }
             }
+        } else {
+            Spacer(Modifier.height(10.dp))
         }
 
-        LazyColumn(
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(design.cardSpacing),
-        ) {
-            items(filtered, key = { it.server.id }) { rt ->
-                val metric = rt.latestMetric
-                val accent = Color(rt.server.accentColorHex)
-                RackBladeCard(
-                    accentColor = accent,
-                    highlightedBorder = if (rt.server.id == selectedId) MaterialTheme.colorScheme.primary else null,
-                    onClick = { onSelect(rt.server.id) },
+        when {
+            state.servers.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
-                            StatusBeacon(health = rt.health, size = 14.dp)
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text(rt.server.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                                    if (rt.server.isSimulated) {
-                                        Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = MaterialTheme.shapes.extraSmall) {
-                                            Text("DEMO", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
-                                        }
+                    ExpressiveEmptyState(
+                        icon = Icons.Rounded.Dns,
+                        title = "No Nodes Configured",
+                        description = "Add a Linux server, Raspberry Pi, or Docker host over SSH to start monitoring.",
+                        actionLabel = "Onboard SSH Node",
+                        onAction = onAddClick,
+                    )
+                }
+            }
+            filtered.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    ExpressiveCard(
+                        tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    ) {
+                        Text(
+                            text = "No Matching Nodes",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "No configured nodes match your current search or tag filter.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        FilledTonalButton(
+                            onClick = {
+                                onSearch("")
+                                onTag("All")
+                            },
+                            shape = RoundedCornerShape(999.dp),
+                        ) {
+                            Text("Clear Filters")
+                        }
+                    }
+                }
+            }
+            else -> {
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 104.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    itemsIndexed(filtered, key = { _, rt -> rt.server.id }) { index, rt ->
+                        val metric = rt.latestMetric
+                        val isSelected = rt.server.id == selectedId
+                        val containerColor = if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        }
+                        val contentColor = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                        val mutedColor = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+
+                        ExpressiveGroupedItem(
+                            index = index,
+                            count = filtered.size,
+                            containerColor = containerColor,
+                            onClick = { onSelect(rt.server.id) },
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                StatusBeacon(health = rt.health, size = 12.dp)
+                                ExpressiveIconTile(
+                                    icon = if (rt.server.capabilities.isRaspberryPi) {
+                                        Icons.Rounded.DeveloperBoard
+                                    } else {
+                                        Icons.Rounded.Dns
+                                    },
+                                    containerColor = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                    } else {
+                                        MaterialTheme.colorScheme.secondaryContainer
+                                    },
+                                    contentColor = if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    },
+                                    size = 38.dp,
+                                    iconSize = 19.dp,
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = rt.server.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = contentColor,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = "${rt.server.username}@${rt.server.primaryHost}:${rt.server.port}",
+                                        style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                                        color = mutedColor,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (metric != null) {
+                                    Column(
+                                        horizontalAlignment = Alignment.End,
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        MetricPillBadge(
+                                            text = "${metric.latencyMs}ms",
+                                            containerColor = if (isSelected) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceContainerHigh
+                                            },
+                                            contentColor = contentColor,
+                                        )
+                                        MetricPillBadge(
+                                            text = "CPU ${Formatters.formatPercent(metric.cpuPct)}",
+                                            containerColor = if (isSelected) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                                            } else {
+                                                MaterialTheme.colorScheme.secondaryContainer
+                                            },
+                                            contentColor = if (isSelected) {
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSecondaryContainer
+                                            },
+                                        )
                                     }
                                 }
+                            }
+
+                            if (metric != null && rt.history.size >= 2) {
+                                Spacer(Modifier.height(8.dp))
+                                VicoSparkline(
+                                    values = rt.history.map { it.cpuPct },
+                                    lineColor = Color(rt.server.accentColorHex),
+                                    modifier = Modifier.fillMaxWidth().height(34.dp),
+                                )
+                            } else if (rt.lastError != null) {
+                                Spacer(Modifier.height(6.dp))
                                 Text(
-                                    "${rt.server.username}@${rt.server.primaryHost}:${rt.server.port} · ${rt.server.groupTag}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    text = "Offline: ${rt.lastError}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isSelected) contentColor else design.statusFault,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
-                        Row {
-                            if (rt.health == ServerHealth.OFFLINE && rt.server.macAddress.isNotBlank()) {
-                                IconButton(onClick = { onWake(rt.server) }) {
-                                    Icon(Icons.Rounded.Bolt, contentDescription = "Wake on LAN", tint = design.statusWarn)
-                                }
-                            }
-                            IconButton(onClick = { onOpenTerminal(rt.server.id) }) {
-                                Icon(Icons.Rounded.Terminal, contentDescription = "SSH")
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-                    if (metric != null) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("CPU ${Formatters.formatPercent(metric.cpuPct)}", style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace)
-                            Text("RAM ${Formatters.formatPercent(metric.memPct)}", style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace)
-                            Text("TEMP ${Formatters.formatTemperature(metric.tempC, state.preferences.temperatureUnit)}", style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace)
-                            Text("CTR ${metric.runningContainers}/${metric.totalContainers}", style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace)
-                        }
-                        if (rt.history.size >= 2) {
-                            Spacer(Modifier.height(6.dp))
-                            VicoSparkline(
-                                values = rt.history.map { it.cpuPct },
-                                lineColor = accent,
-                                modifier = Modifier.fillMaxWidth().height(42.dp),
-                            )
-                        }
-                    } else if (rt.lastError != null) {
-                        Text(
-                            text = "Offline: ${rt.lastError}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = design.statusFault,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
                     }
                 }
             }
         }
     }
 }
+
+private data class HeroActionItem(
+    val label: String,
+    val icon: ImageVector,
+    val isDestructive: Boolean = false,
+    val onClick: () -> Unit,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -372,54 +597,174 @@ private fun ServerDetailPane(
     viewModel: ServersViewModel,
     modifier: Modifier = Modifier,
 ) {
+    val design = LocalGlassrackDesign.current
     val server = runtime.server
     var selectedTab by remember(server.id) { mutableIntStateOf(0) }
-    val tabs = listOf("Overview", "Containers", "Services", "Processes", "Net & Files")
+    val tabs = listOf("Overview", "Containers", "Processes", "Services", "Net & Files")
     var confirmPowerAction by remember { mutableStateOf<Boolean?>(null) }
+    var confirmDeleteNode by remember { mutableStateOf(false) }
+
+    val heroContainerColor = when (runtime.health) {
+        ServerHealth.OFFLINE -> MaterialTheme.colorScheme.errorContainer
+        ServerHealth.WARNING -> design.statusWarnContainer
+        else -> MaterialTheme.colorScheme.primaryContainer
+    }
+    val heroContentColor = when (runtime.health) {
+        ServerHealth.OFFLINE -> MaterialTheme.colorScheme.onErrorContainer
+        ServerHealth.WARNING -> design.onStatusWarnContainer
+        else -> MaterialTheme.colorScheme.onPrimaryContainer
+    }
+    val heroBadgeIcon = when (runtime.health) {
+        ServerHealth.ONLINE -> Icons.Rounded.CheckCircle
+        ServerHealth.WARNING -> Icons.Rounded.Warning
+        ServerHealth.OFFLINE -> Icons.Rounded.CloudOff
+        ServerHealth.CONNECTING -> Icons.Rounded.Sync
+        ServerHealth.UNKNOWN -> Icons.Rounded.Dns
+    }
+    val subtitleText = remember(server) {
+        listOfNotNull(
+            server.primaryHost.takeIf { it.isNotBlank() },
+            server.capabilities.distro.takeIf { it.isNotBlank() },
+            server.capabilities.arch.takeIf { it.isNotBlank() },
+        ).joinToString(" · ")
+    }
+    val heroActions = buildList {
+        add(HeroActionItem("SSH", Icons.Rounded.Terminal) { onOpenTerminal(server.id, null) })
+        add(HeroActionItem("Poll", Icons.Rounded.Refresh) { viewModel.pollServer(server) })
+        if (server.macAddress.isNotBlank()) {
+            add(HeroActionItem("Wake", Icons.Rounded.Bolt) { viewModel.wakeServer(server) })
+        }
+        add(HeroActionItem("Edit", Icons.Rounded.Edit, onClick = onEdit))
+        add(
+            HeroActionItem(
+                label = "Delete",
+                icon = Icons.Rounded.Delete,
+                isDestructive = true,
+                onClick = {
+                    if (allState.preferences.destructiveConfirmation == ConfirmationLevel.NONE) {
+                        onDelete()
+                    } else {
+                        confirmDeleteNode = true
+                    }
+                },
+            ),
+        )
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                if (showBack) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
-                    }
+        if (showBack) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FilledTonalIconButton(
+                    onClick = onBack,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
                 }
-                StatusBeacon(health = runtime.health, size = 14.dp)
-                Spacer(Modifier.width(10.dp))
-                Column {
-                    Text(server.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        "${server.capabilities.distro.ifBlank { server.primaryHost }} · ${runtime.latestMetric?.latencyMs ?: 0}ms",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            Row {
-                IconButton(onClick = { onOpenTerminal(server.id, null) }) {
-                    Icon(Icons.Rounded.Terminal, contentDescription = "Open SSH")
-                }
-                IconButton(onClick = onEdit) {
-                    Icon(Icons.Rounded.Edit, contentDescription = "Edit Server")
-                }
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Rounded.Delete, contentDescription = "Delete Server")
-                }
+                Text(
+                    text = "Back to Nodes",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
-        PrimaryScrollableTabRow(selectedTabIndex = selectedTab, edgePadding = 12.dp) {
+        ExpressiveHeroCard(
+            headline = server.name,
+            subtitle = subtitleText.ifBlank { "${server.username}@${server.primaryHost}:${server.port}" },
+            eyebrow = buildString {
+                append(server.groupTag)
+                append(" · ")
+                append(runtime.health.name)
+                runtime.latestMetric?.let { append(" · ${it.latencyMs}ms") }
+            },
+            containerColor = heroContainerColor,
+            contentColor = heroContentColor,
+            badgeIcon = heroBadgeIcon,
+            badgeShape = ExpressiveBadgeShape.Cookie9Sided,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            actions = {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    heroActions.forEachIndexed { index, action ->
+                        val shape = expressiveHorizontalGroupShape(index = index, count = heroActions.size)
+                        val pillContainer = if (action.isDestructive) {
+                            MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
+                        } else {
+                            heroContentColor.copy(alpha = 0.14f)
+                        }
+                        Surface(
+                            onClick = action.onClick,
+                            shape = shape,
+                            color = pillContainer,
+                            contentColor = heroContentColor,
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    imageVector = action.icon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Text(
+                                    text = action.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             tabs.forEachIndexed { idx, title ->
-                Tab(
-                    selected = selectedTab == idx,
+                val isSelected = selectedTab == idx
+                Surface(
                     onClick = { selectedTab = idx },
-                    text = { Text(title) },
-                )
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    contentColor = if (isSelected) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                    )
+                }
             }
         }
 
@@ -430,13 +775,14 @@ private fun ServerDetailPane(
                 onWake = { viewModel.wakeServer(server) },
                 onReboot = { confirmPowerAction = true },
                 onShutdown = { confirmPowerAction = false },
+                onOpenTerminal = { cmd -> onOpenTerminal(server.id, cmd) },
             )
             1 -> ContainersPane(
                 server = server,
                 onOpenExecShell = { id, cmd -> onOpenTerminal(id, cmd) },
             )
-            2 -> ServicesAndCronPane(server = server)
-            3 -> ProcessesPane(server = server)
+            2 -> ProcessesPane(server = server)
+            3 -> ServicesAndCronPane(server = server)
             4 -> NetworkAndFilesTab(
                 server = server,
                 tunnels = allState.tunnels.filter { it.serverId == server.id },
@@ -459,6 +805,19 @@ private fun ServerDetailPane(
             onDismiss = { confirmPowerAction = null },
         )
     }
+
+    if (confirmDeleteNode) {
+        ActionSafetyDialog(
+            title = "Delete ${server.name}?",
+            description = "This removes ${server.primaryHost} and its stored configuration from Glassrack.",
+            confirmationLevel = allState.preferences.destructiveConfirmation,
+            onConfirm = {
+                confirmDeleteNode = false
+                onDelete()
+            },
+            onDismiss = { confirmDeleteNode = false },
+        )
+    }
 }
 
 @Composable
@@ -468,140 +827,507 @@ private fun ServerOverviewTab(
     onWake: () -> Unit,
     onReboot: () -> Unit,
     onShutdown: () -> Unit,
+    onOpenTerminal: (String?) -> Unit,
 ) {
     val design = LocalGlassrackDesign.current
     val metric = runtime.latestMetric
     val server = runtime.server
     val accent = Color(server.accentColorHex)
+    val primaryDisk = remember(metric?.disks) {
+        metric?.disks?.firstOrNull { it.mountPoint == "/" } ?: metric?.disks?.maxByOrNull { it.usedPercent }
+    }
 
     LazyColumn(
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 104.dp),
-        verticalArrangement = Arrangement.spacedBy(design.cardSpacing),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // Paired 2-column tonal stat cards
         item {
-            RackBladeCard(accentColor = accent) {
-                Text("Compute & Memory", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                WavyMetricBar("CPU Total", Formatters.formatPercent(metric?.cpuPct ?: 0f), (metric?.cpuPct ?: 0f) / 100f, accentColor = accent)
-                Spacer(Modifier.height(8.dp))
-                WavyMetricBar(
-                    "Memory",
-                    "${Formatters.formatBytes(metric?.memUsedBytes ?: 0L, prefs.storageUnit)} / ${Formatters.formatBytes(metric?.memTotalBytes ?: 0L, prefs.storageUnit)}",
-                    (metric?.memPct ?: 0f) / 100f,
-                    accentColor = design.statusActive,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Load Avg: ${metric?.load1m ?: 0f} / ${metric?.load5m ?: 0f} / ${metric?.load15m ?: 0f} · Uptime: ${Formatters.formatUptime(metric?.uptimeSec ?: 0L)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (runtime.history.size >= 2) {
-                    Spacer(Modifier.height(12.dp))
-                    VicoTelemetryChart(
-                        seriesList = listOf(
-                            runtime.history.map { it.cpuPct } to accent,
-                            runtime.history.map { it.memPct } to design.statusActive,
-                        ),
-                        modifier = Modifier.fillMaxWidth().height(170.dp),
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OverviewStatTile(
+                        label = "CPU",
+                        value = Formatters.formatPercent(metric?.cpuPct ?: 0f),
+                        subtitle = "Load ${metric?.load1m ?: 0f}",
+                        icon = Icons.Rounded.Speed,
+                        badgeShape = ExpressiveBadgeShape.Cookie9Sided,
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OverviewStatTile(
+                        label = "Memory",
+                        value = Formatters.formatPercent(metric?.memPct ?: 0f),
+                        subtitle = "${Formatters.formatBytes(metric?.memUsedBytes ?: 0L, prefs.storageUnit)} / ${Formatters.formatBytes(metric?.memTotalBytes ?: 0L, prefs.storageUnit)}",
+                        icon = Icons.Rounded.Memory,
+                        badgeShape = ExpressiveBadgeShape.Cookie7Sided,
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OverviewStatTile(
+                        label = "Disk",
+                        value = primaryDisk?.let { "${it.usedPercent}%" } ?: "—",
+                        subtitle = primaryDisk?.let {
+                            "${it.mountPoint} · ${Formatters.formatBytes(it.usedBytes, prefs.storageUnit)}"
+                        } ?: "No mounts",
+                        icon = Icons.Rounded.Storage,
+                        badgeShape = ExpressiveBadgeShape.SoftBurst,
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OverviewStatTile(
+                        label = "Temp",
+                        value = Formatters.formatTemperature(metric?.tempC, prefs.temperatureUnit),
+                        subtitle = "Up ${Formatters.formatUptime(metric?.uptimeSec ?: 0L)}",
+                        icon = Icons.Rounded.Thermostat,
+                        badgeShape = ExpressiveBadgeShape.Sunny,
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }
         }
 
-        metric?.rpiStats?.let { rpi ->
-            item {
-                RackBladeCard(accentColor = design.statusOk) {
-                    Text("Raspberry Pi Hardware", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(6.dp))
-                    if (rpi.boardModel.isNotBlank()) {
-                        Text(rpi.boardModel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("SoC: ${Formatters.formatTemperature(rpi.socTempC?.toFloat(), prefs.temperatureUnit)}", fontFamily = FontFamily.Monospace)
-                        Text("ARM: ${rpi.cpuFreqMhz ?: 0} MHz", fontFamily = FontFamily.Monospace)
-                        rpi.fanRpm?.let { Text("Fan: $it RPM", fontFamily = FontFamily.Monospace) }
-                    }
-                    Spacer(Modifier.height(4.dp))
+        // Live Telemetry
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExpressiveSectionHeader(title = "Live Telemetry")
+                ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    WavyMetricBar(
+                        label = "CPU Total",
+                        valueText = Formatters.formatPercent(metric?.cpuPct ?: 0f),
+                        fraction = (metric?.cpuPct ?: 0f) / 100f,
+                        accentColor = accent,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    WavyMetricBar(
+                        label = "Memory",
+                        valueText = "${Formatters.formatBytes(metric?.memUsedBytes ?: 0L, prefs.storageUnit)} / ${Formatters.formatBytes(metric?.memTotalBytes ?: 0L, prefs.storageUnit)}",
+                        fraction = (metric?.memPct ?: 0f) / 100f,
+                        accentColor = design.statusActive,
+                    )
+                    Spacer(Modifier.height(10.dp))
                     Text(
-                        "Throttled Flags: ${rpi.throttledRaw ?: "0x0"} · Under-Voltage: ${rpi.underVoltageDetected} · Throttled: ${rpi.currentlyThrottled}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (rpi.underVoltageDetected || rpi.currentlyThrottled) design.statusFault else design.statusOk,
+                        text = "Load ${metric?.load1m ?: 0f} / ${metric?.load5m ?: 0f} / ${metric?.load15m ?: 0f} · Uptime ${Formatters.formatUptime(metric?.uptimeSec ?: 0L)}",
+                        style = MaterialTheme.typography.labelMedium.merge(design.monoNumericStyle),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (runtime.history.size >= 2) {
+                        Spacer(Modifier.height(12.dp))
+                        VicoTelemetryChart(
+                            seriesList = listOf(
+                                runtime.history.map { it.cpuPct } to accent,
+                                runtime.history.map { it.memPct } to design.statusActive,
+                            ),
+                            modifier = Modifier.fillMaxWidth().height(170.dp),
+                        )
+                    }
                 }
             }
         }
 
+        // Disk Mounts
         if (metric != null && metric.disks.isNotEmpty()) {
             item {
-                RackBladeCard(accentColor = design.statusActive) {
-                    Text("Storage & Mounts", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
-                    metric.disks.forEach { disk ->
-                        WavyMetricBar(
-                            label = "${disk.mountPoint} (${disk.filesystem})",
-                            valueText = "${Formatters.formatBytes(disk.usedBytes, prefs.storageUnit)} / ${Formatters.formatBytes(disk.totalBytes, prefs.storageUnit)} (${disk.usedPercent}%)",
-                            fraction = disk.usedPercent / 100f,
-                            accentColor = if (disk.usedPercent > 88) design.statusWarn else design.statusActive,
-                        )
-                        Spacer(Modifier.height(6.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "Disk Mounts", count = metric.disks.size)
+                    ExpressiveGroupedCard {
+                        metric.disks.forEachIndexed { index, disk ->
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = metric.disks.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ) {
+                                WavyMetricBar(
+                                    label = "${disk.mountPoint} (${disk.filesystem})",
+                                    valueText = "${Formatters.formatBytes(disk.usedBytes, prefs.storageUnit)} / ${Formatters.formatBytes(disk.totalBytes, prefs.storageUnit)} (${disk.usedPercent}%)",
+                                    fraction = disk.usedPercent / 100f,
+                                    accentColor = if (disk.usedPercent > 88) design.statusWarn else design.statusActive,
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
 
+        // Raspberry Pi Hardware
+        metric?.rpiStats?.let { rpi ->
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "Raspberry Pi Hardware")
+                    val rpiRows = buildList<Pair<String, String>> {
+                        if (rpi.boardModel.isNotBlank()) add("Board Model" to rpi.boardModel)
+                        add("SoC Temperature" to Formatters.formatTemperature(rpi.socTempC?.toFloat(), prefs.temperatureUnit))
+                        add("ARM Clock" to "${rpi.cpuFreqMhz ?: 0} MHz")
+                        rpi.fanRpm?.let { add("Fan Speed" to "$it RPM") }
+                        add(
+                            "Power & Thermal Flags" to
+                                "${rpi.throttledRaw ?: "0x0"} · UV: ${rpi.underVoltageDetected} · Throttled: ${rpi.currentlyThrottled}",
+                        )
+                    }
+                    ExpressiveGroupedCard {
+                        rpiRows.forEachIndexed { index, (k, v) ->
+                            val isAlertRow = k == "Power & Thermal Flags" && (rpi.underVoltageDetected || rpi.currentlyThrottled)
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = rpiRows.size,
+                                containerColor = if (isAlertRow) design.statusFaultContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = k,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (isAlertRow) design.onStatusFaultContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        text = v,
+                                        style = MaterialTheme.typography.labelLarge.merge(design.monoNumericStyle),
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isAlertRow) design.onStatusFaultContainer else MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Custom Probes
+        if (metric != null && metric.customResults.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "Custom Probes", count = metric.customResults.size)
+                    ExpressiveGroupedCard {
+                        metric.customResults.forEachIndexed { index, probe ->
+                            val ok = probe.exitCode == 0
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = metric.customResults.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = probe.label,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    MetricPillBadge(
+                                        text = "exit ${probe.exitCode}",
+                                        containerColor = if (ok) design.statusOkContainer else design.statusFaultContainer,
+                                        contentColor = if (ok) design.onStatusOkContainer else design.onStatusFaultContainer,
+                                    )
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = probe.output.ifBlank { "(no output)" },
+                                    style = MaterialTheme.typography.bodySmall.merge(design.monoNumericStyle),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ZFS Pools
+        if (metric != null && metric.zfsPools.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "ZFS Pools", count = metric.zfsPools.size)
+                    ExpressiveGroupedCard {
+                        metric.zfsPools.forEachIndexed { index, pool ->
+                            val healthy = pool.state.equals("ONLINE", ignoreCase = true)
+                            val frac = if (pool.sizeBytes > 0L) {
+                                (pool.allocatedBytes.toFloat() / pool.sizeBytes.toFloat()).coerceIn(0f, 1f)
+                            } else 0f
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = metric.zfsPools.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = pool.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    MetricPillBadge(
+                                        text = pool.state,
+                                        containerColor = if (healthy) design.statusOkContainer else design.statusWarnContainer,
+                                        contentColor = if (healthy) design.onStatusOkContainer else design.onStatusWarnContainer,
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                WavyMetricBar(
+                                    label = "Allocated",
+                                    valueText = "${Formatters.formatBytes(pool.allocatedBytes, prefs.storageUnit)} / ${Formatters.formatBytes(pool.sizeBytes, prefs.storageUnit)}",
+                                    fraction = frac,
+                                    accentColor = if (healthy) design.statusOk else design.statusWarn,
+                                )
+                                if (pool.scrubStatus.isNotBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = pool.scrubStatus,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // S.M.A.R.T. Health
+        if (server.capabilities.hasSmartctl) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "S.M.A.R.T. Health")
+                    ExpressiveGroupedCard {
+                        ExpressiveGroupedItem(
+                            index = 0,
+                            count = 1,
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "smartctl Available",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        text = "Run an interactive SMART drive check in SSH.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                FilledTonalButton(
+                                    onClick = { onOpenTerminal("sudo smartctl --scan\n") },
+                                    shape = RoundedCornerShape(999.dp),
+                                ) {
+                                    Text("Inspect")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // GPUs
         if (metric != null && metric.gpus.isNotEmpty()) {
             item {
-                RackBladeCard(accentColor = design.statusOk) {
-                    Text("GPU Telemetry", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(6.dp))
-                    metric.gpus.forEach { gpu ->
-                        Text(
-                            "${gpu.name} · ${gpu.utilizationPct}% util · VRAM ${gpu.vramUsedMb}/${gpu.vramTotalMb} MB · ${gpu.tempC}°C${gpu.powerWatts?.let { " · ${it}W" } ?: ""}",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "GPUs", count = metric.gpus.size)
+                    ExpressiveGroupedCard {
+                        metric.gpus.forEachIndexed { index, gpu ->
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = metric.gpus.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = gpu.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        MetricPillBadge(
+                                            text = Formatters.formatTemperature(gpu.tempC.toFloat(), prefs.temperatureUnit),
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            contentColor = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                        gpu.powerWatts?.let { watts ->
+                                            MetricPillBadge(
+                                                text = "${watts}W",
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                WavyMetricBar(
+                                    label = "Utilization · VRAM ${gpu.vramUsedMb}/${gpu.vramTotalMb} MB",
+                                    valueText = "${gpu.utilizationPct}%",
+                                    fraction = gpu.utilizationPct / 100f,
+                                    accentColor = design.statusOk,
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
 
+        // Power & Wake-on-LAN
         item {
-            RackBladeCard(accentColor = design.statusWarn) {
-                Text("Power & Wake-on-LAN", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = onWake,
-                        enabled = server.macAddress.isNotBlank(),
-                        modifier = Modifier.weight(1f),
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExpressiveSectionHeader(title = "Power Controls")
+                ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Icon(Icons.Rounded.Bolt, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Wake")
-                    }
-                    OutlinedButton(
-                        onClick = onReboot,
-                        enabled = !prefs.safeReadOnlyMode,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Rounded.RestartAlt, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Reboot")
-                    }
-                    OutlinedButton(
-                        onClick = onShutdown,
-                        enabled = !prefs.safeReadOnlyMode,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Rounded.PowerSettingsNew, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Shut")
+                        val powerButtons = listOf(
+                            Triple("Wake", Icons.Rounded.Bolt, server.macAddress.isNotBlank()) to onWake,
+                            Triple("Reboot", Icons.Rounded.RestartAlt, !prefs.safeReadOnlyMode) to onReboot,
+                            Triple("Shutdown", Icons.Rounded.PowerSettingsNew, !prefs.safeReadOnlyMode) to onShutdown,
+                        )
+                        powerButtons.forEachIndexed { idx, (meta, handler) ->
+                            val (label, icon, enabled) = meta
+                            val isShutdown = label == "Shutdown"
+                            Surface(
+                                onClick = handler,
+                                enabled = enabled,
+                                shape = expressiveHorizontalGroupShape(idx, powerButtons.size),
+                                color = when {
+                                    !enabled -> MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
+                                    isShutdown -> MaterialTheme.colorScheme.errorContainer
+                                    else -> MaterialTheme.colorScheme.secondaryContainer
+                                },
+                                contentColor = when {
+                                    !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                    isShutdown -> MaterialTheme.colorScheme.onErrorContainer
+                                    else -> MaterialTheme.colorScheme.onSecondaryContainer
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center,
+                                ) {
+                                    Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(5.dp))
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun OverviewStatTile(
+    label: String,
+    value: String,
+    subtitle: String,
+    icon: ImageVector,
+    badgeShape: ExpressiveBadgeShape,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val design = LocalGlassrackDesign.current
+    ExpressiveCard(
+        modifier = modifier,
+        tonalContainerColor = containerColor,
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = contentColor.copy(alpha = 0.84f),
+            )
+            ExpressiveShapeBadge(
+                shape = badgeShape,
+                containerColor = contentColor.copy(alpha = 0.14f),
+                contentColor = contentColor,
+                size = 36.dp,
+                icon = icon,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.headlineMedium.merge(design.monoNumericStyle),
+            fontWeight = FontWeight.Bold,
+            color = contentColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+            color = contentColor.copy(alpha = 0.78f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun MetricPillBadge(
+    text: String,
+    containerColor: Color,
+    contentColor: Color,
+) {
+    val design = LocalGlassrackDesign.current
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            maxLines = 1,
+        )
     }
 }
 
@@ -623,96 +1349,322 @@ private fun NetworkAndFilesTab(
     }
 
     LazyColumn(
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 104.dp),
-        verticalArrangement = Arrangement.spacedBy(design.cardSpacing),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         netFiles.statusMessage?.let { msg ->
             item {
-                Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.small) {
-                    Row(Modifier.fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(msg, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                        TextButton(onClick = viewModel::clearMessage) { Text("OK") }
-                    }
-                }
-            }
-        }
-
-        item {
-            RackBladeCard(accentColor = design.statusActive) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("SSH Port Forward Tunnels", style = MaterialTheme.typography.titleMedium)
-                    TextButton(onClick = { showNewTunnel = true }) { Text("+ Tunnel") }
-                }
-                if (tunnels.isEmpty()) {
-                    Text("Forward remote admin UIs (e.g. 8096, 8123, 8006) securely over SSH.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    tunnels.forEach { tun ->
-                        val active = tun.id in activeTunnelIds
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("${tun.label}: localhost:${tun.localPort} -> ${tun.remoteHost}:${tun.remotePort}", style = MaterialTheme.typography.labelMedium)
-                            Switch(checked = active, onCheckedChange = { viewModel.toggleTunnel(tun, server) })
+                ExpressiveCard(
+                    tonalContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = viewModel::clearMessage) {
+                            Text("OK")
                         }
                     }
                 }
             }
         }
 
+        // Port-Forward Tunnels
         item {
-            RackBladeCard(accentColor = design.statusOk) {
-                Text("Network Interfaces & Open Ports", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(6.dp))
-                netFiles.interfaces.forEach { iface ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExpressiveSectionHeader(
+                    title = "Port-Forward Tunnels",
+                    count = tunnels.size,
+                    actionLabel = "+ Tunnel",
+                    onAction = { showNewTunnel = true },
+                )
+                if (tunnels.isEmpty()) {
+                    ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                        Text(
+                            text = "Forward remote admin UIs (e.g. 8096, 8123, 8006) securely over SSH.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        FilledTonalButton(
+                            onClick = { showNewTunnel = true },
+                            shape = RoundedCornerShape(999.dp),
+                        ) {
+                            Icon(Icons.Rounded.Add, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Create Tunnel")
+                        }
+                    }
+                } else {
+                    ExpressiveGroupedCard {
+                        tunnels.forEachIndexed { index, tun ->
+                            val active = tun.id in activeTunnelIds
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = tunnels.size,
+                                containerColor = if (active) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLow
+                                },
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        ExpressiveIconTile(
+                                            icon = Icons.Rounded.Router,
+                                            containerColor = if (active) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                            } else {
+                                                MaterialTheme.colorScheme.secondaryContainer
+                                            },
+                                            size = 36.dp,
+                                            iconSize = 18.dp,
+                                        )
+                                        Column {
+                                            Text(
+                                                text = tun.label,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                            Text(
+                                                text = "localhost:${tun.localPort} -> ${tun.remoteHost}:${tun.remotePort}",
+                                                style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                    Switch(
+                                        checked = active,
+                                        onCheckedChange = { viewModel.toggleTunnel(tun, server) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Network Interfaces
+        if (netFiles.interfaces.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "Network Interfaces", count = netFiles.interfaces.size)
+                    ExpressiveGroupedCard {
+                        netFiles.interfaces.forEachIndexed { index, iface ->
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = netFiles.interfaces.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    ExpressiveIconTile(
+                                        icon = Icons.Rounded.Lan,
+                                        containerColor = if (iface.linkUp) design.statusOkContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        contentColor = if (iface.linkUp) design.onStatusOkContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        size = 36.dp,
+                                        iconSize = 18.dp,
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = iface.name,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                            MetricPillBadge(
+                                                text = if (iface.linkUp) "UP" else "DOWN",
+                                                containerColor = if (iface.linkUp) design.statusOkContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                contentColor = if (iface.linkUp) design.onStatusOkContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        Text(
+                                            text = iface.ipv4.ifBlank { "No IPv4" },
+                                            style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = "RX ${Formatters.formatBytes(iface.rxBytes, prefs.storageUnit)}",
+                                            style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                                        )
+                                        Text(
+                                            text = "TX ${Formatters.formatBytes(iface.txBytes, prefs.storageUnit)}",
+                                            style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Listening Ports
+        if (netFiles.ports.isNotEmpty()) {
+            val shownPorts = netFiles.ports.take(12)
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(title = "Listening Ports", count = netFiles.ports.size)
+                    ExpressiveGroupedCard {
+                        shownPorts.forEachIndexed { index, p ->
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = shownPorts.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        MetricPillBadge(
+                                            text = p.protocol.uppercase(),
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        )
+                                        Text(
+                                            text = "${p.localAddress}:${p.port}",
+                                            style = MaterialTheme.typography.labelLarge.merge(design.monoNumericStyle),
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                    }
+                                    Text(
+                                        text = p.processName.ifBlank { "—" },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remote File Explorer
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExpressiveSectionHeader(
+                    title = "Remote File Explorer",
+                    count = netFiles.files.size,
+                    actionLabel = if (netFiles.currentPath != "/") "Parent Dir" else null,
+                    onAction = {
+                        val parent = netFiles.currentPath.substringBeforeLast('/').ifEmpty { "/" }
+                        viewModel.loadNetworkAndFiles(server, parent)
+                    },
+                )
+                ExpressiveCard(
+                    tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                ) {
                     Text(
-                        "${iface.name}: ${iface.ipv4.ifBlank { "—" }} · RX ${Formatters.formatBytes(iface.rxBytes, prefs.storageUnit)} · TX ${Formatters.formatBytes(iface.txBytes, prefs.storageUnit)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
+                        text = netFiles.currentPath,
+                        style = MaterialTheme.typography.labelLarge.merge(design.monoNumericStyle),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-                if (netFiles.ports.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    netFiles.ports.take(10).forEach { p ->
-                        Text("${p.protocol.uppercase()} :${p.port} (${p.processName})", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
 
-        item {
-            RackBladeCard {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Column {
-                        Text("SFTP Config Browser", style = MaterialTheme.typography.titleMedium)
-                        Text(netFiles.currentPath, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-                    }
-                    if (netFiles.currentPath != "/") {
-                        TextButton(onClick = {
-                            val parent = netFiles.currentPath.substringBeforeLast('/').ifEmpty { "/" }
-                            viewModel.loadNetworkAndFiles(server, parent)
-                        }) { Text("Up") }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                netFiles.files.forEach { entry ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
-                            Icon(if (entry.isDirectory) Icons.Rounded.Folder else Icons.Rounded.InsertDriveFile, null, modifier = Modifier.size(18.dp))
-                            Column {
-                                Text(entry.name, style = MaterialTheme.typography.bodyMedium)
-                                Text("${entry.permissions} · ${entry.sizeBytes} B", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (netFiles.files.isNotEmpty()) {
+                    ExpressiveGroupedCard {
+                        netFiles.files.forEachIndexed { index, entry ->
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = netFiles.files.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                onClick = {
+                                    if (entry.isDirectory) {
+                                        viewModel.loadNetworkAndFiles(server, entry.fullPath)
+                                    } else {
+                                        viewModel.openRemoteFile(server, entry.fullPath)
+                                    }
+                                },
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    ExpressiveIconTile(
+                                        icon = if (entry.isDirectory) Icons.Rounded.Folder else Icons.AutoMirrored.Rounded.InsertDriveFile,
+                                        containerColor = if (entry.isDirectory) {
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceContainerHigh
+                                        },
+                                        contentColor = if (entry.isDirectory) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        size = 38.dp,
+                                        iconSize = 19.dp,
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = entry.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = "${entry.permissions} · ${Formatters.formatBytes(entry.sizeBytes, prefs.storageUnit)}",
+                                            style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    if (entry.isDirectory) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.ChevronRight,
+                                            contentDescription = "Open directory",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    } else {
+                                        MetricPillBadge(
+                                            text = "Edit",
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        )
+                                    }
+                                }
                             }
-                        }
-                        TextButton(onClick = {
-                            if (entry.isDirectory) {
-                                viewModel.loadNetworkAndFiles(server, entry.fullPath)
-                            } else {
-                                viewModel.openRemoteFile(server, entry.fullPath)
-                            }
-                        }) {
-                            Text(if (entry.isDirectory) "Open" else "Edit")
                         }
                     }
                 }
@@ -722,47 +1674,123 @@ private fun NetworkAndFilesTab(
 
     netFiles.openedFilePath?.let { path ->
         ModalBottomSheet(onDismissRequest = viewModel::closeRemoteFile) {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Editing $path", style = MaterialTheme.typography.titleMedium, fontFamily = FontFamily.Monospace)
-                Text("Saving automatically creates a .bak backup.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = path,
+                    style = MaterialTheme.typography.titleMedium.merge(design.monoNumericStyle),
+                    fontWeight = FontWeight.Bold,
+                )
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
+                    Text(
+                        text = "Saving automatically creates a .bak backup",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    )
+                }
                 OutlinedTextField(
                     value = netFiles.openedFileDraft,
                     onValueChange = viewModel::updateFileDraft,
-                    modifier = Modifier.fillMaxWidth().height(260.dp),
-                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth().height(280.dp),
+                    textStyle = MaterialTheme.typography.bodySmall.merge(design.monoNumericStyle),
+                    shape = RoundedCornerShape(18.dp),
                 )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = viewModel::closeRemoteFile) { Text("Cancel") }
-                    Spacer(Modifier.width(8.dp))
-                    Button(enabled = !prefs.safeReadOnlyMode, onClick = { viewModel.saveRemoteFile(server) }) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                ) {
+                    TextButton(onClick = viewModel::closeRemoteFile) {
+                        Text("Cancel")
+                    }
+                    Button(
+                        enabled = !prefs.safeReadOnlyMode,
+                        onClick = { viewModel.saveRemoteFile(server) },
+                        shape = RoundedCornerShape(999.dp),
+                    ) {
                         Text("Save + Backup")
                     }
                 }
+                Spacer(Modifier.height(12.dp))
             }
         }
     }
 
     if (showNewTunnel) {
-        var label by remember { mutableStateOf("Web UI") }
-        var localP by remember { mutableStateOf("8096") }
-        var remoteP by remember { mutableStateOf("8096") }
+        var label by remember { mutableStateOf("") }
+        var localP by remember { mutableStateOf("") }
+        var remoteP by remember { mutableStateOf("") }
+        val localPortInt = localP.trim().toIntOrNull()
+        val remotePortInt = remoteP.trim().toIntOrNull()
+        val canSubmit = localPortInt != null && localPortInt in 1..65535 &&
+            remotePortInt != null && remotePortInt in 1..65535
+
         AlertDialog(
             onDismissRequest = { showNewTunnel = false },
-            title = { Text("Add SSH Tunnel") },
+            shape = RoundedCornerShape(28.dp),
+            title = {
+                Text("Add SSH Tunnel", style = MaterialTheme.typography.headlineSmall)
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = label, onValueChange = { label = it }, label = { Text("Label") })
-                    OutlinedTextField(value = localP, onValueChange = { localP = it }, label = { Text("Local Port") })
-                    OutlinedTextField(value = remoteP, onValueChange = { remoteP = it }, label = { Text("Remote Port") })
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = label,
+                        onValueChange = { label = it },
+                        label = { Text("Label") },
+                        placeholder = { Text("e.g. Web UI") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = localP,
+                        onValueChange = { localP = it },
+                        label = { Text("Local Port") },
+                        placeholder = { Text("8096") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = remoteP,
+                        onValueChange = { remoteP = it },
+                        label = { Text("Remote Port") },
+                        placeholder = { Text("8096") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    viewModel.createTunnel(server.id, label, localP.toIntOrNull() ?: 8096, "127.0.0.1", remoteP.toIntOrNull() ?: 8096)
-                    showNewTunnel = false
-                }) { Text("Add") }
+                Button(
+                    enabled = canSubmit,
+                    shape = RoundedCornerShape(999.dp),
+                    onClick = {
+                        viewModel.createTunnel(
+                            serverId = server.id,
+                            label = label.trim(),
+                            localPort = localPortInt!!,
+                            remoteHost = "127.0.0.1",
+                            remotePort = remotePortInt!!,
+                        )
+                        showNewTunnel = false
+                    },
+                ) {
+                    Text("Add Tunnel")
+                }
             },
-            dismissButton = { TextButton(onClick = { showNewTunnel = false }) { Text("Cancel") } },
+            dismissButton = {
+                TextButton(onClick = { showNewTunnel = false }) {
+                    Text("Cancel")
+                }
+            },
         )
     }
 }
@@ -786,14 +1814,15 @@ private fun AddEditServerSheet(
     var fallbackHost by remember { mutableStateOf(initial.fallbackHost) }
     var portText by remember { mutableStateOf(initial.port.toString()) }
     var username by remember { mutableStateOf(initial.username) }
-    var authType by remember { mutableStateOf(initial.authType) }
+    var authType by remember {
+        mutableStateOf(if (initial.authType == AuthType.INTERACTIVE) AuthType.PASSWORD else initial.authType)
+    }
     var selectedKeyId by remember { mutableStateOf(initial.sshKeyId ?: sshKeys.firstOrNull()?.id) }
     var password by remember { mutableStateOf("") }
     var macAddress by remember { mutableStateOf(initial.macAddress) }
     var jumpHostId by remember { mutableStateOf(initial.jumpHostServerId) }
     var pollInterval by remember { mutableStateOf(initial.pollIntervalSec.toString()) }
     var notes by remember { mutableStateOf(initial.notes) }
-    var isSimulated by remember { mutableStateOf(if (isNew) false else initial.isSimulated) }
 
     fun buildServer(): Server = initial.copy(
         name = name.trim().ifBlank { primaryHost.trim() },
@@ -808,7 +1837,6 @@ private fun AddEditServerSheet(
         jumpHostServerId = jumpHostId,
         pollIntervalSec = (pollInterval.toIntOrNull() ?: 5).coerceIn(2, 300),
         notes = notes.trim(),
-        isSimulated = isSimulated,
     )
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -816,91 +1844,276 @@ private fun AddEditServerSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(if (isNew) "Onboard SSH Node" else "Edit ${initial.name}", style = MaterialTheme.typography.titleLarge)
-            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Node Name (e.g. rpi5-core.lan)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = primaryHost, onValueChange = { primaryHost = it }, label = { Text("Primary LAN Host / IP") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = fallbackHost, onValueChange = { fallbackHost = it }, label = { Text("Fallback Tailscale / DDNS Host (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("SSH User") }, singleLine = true, modifier = Modifier.weight(1f))
-                OutlinedTextField(value = portText, onValueChange = { portText = it }, label = { Text("Port") }, singleLine = true, modifier = Modifier.width(100.dp))
-            }
-            OutlinedTextField(value = groupTag, onValueChange = { groupTag = it }, label = { Text("Rack Group / Tag") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text(
+                text = if (isNew) "Onboard SSH Node" else "Edit ${initial.name}",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+            )
 
-            Text("Authentication", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AuthType.entries.forEach { t ->
-                    FilterChip(selected = authType == t, onClick = { authType = t }, label = { Text(t.name) })
+            ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Text(
+                    text = "Node & Connection",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(10.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Node Name") },
+                        placeholder = { Text("e.g. rpi5-core.lan") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = primaryHost,
+                        onValueChange = { primaryHost = it },
+                        label = { Text("Primary LAN Host / IP") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = fallbackHost,
+                        onValueChange = { fallbackHost = it },
+                        label = { Text("Fallback Tailscale / DDNS Host (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = username,
+                            onValueChange = { username = it },
+                            label = { Text("SSH User") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = portText,
+                            onValueChange = { portText = it },
+                            label = { Text("Port") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.width(104.dp),
+                        )
+                    }
+                    OutlinedTextField(
+                        value = groupTag,
+                        onValueChange = { groupTag = it },
+                        label = { Text("Rack Group / Tag") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
-            if (authType == AuthType.KEY) {
-                if (sshKeys.isEmpty()) {
-                    Text("No SSH keys in vault yet — create or import one in Settings.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+
+            ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Text(
+                    text = "Authentication",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(10.dp))
+                ExpressiveSegmentedPillGroup(
+                    options = listOf(AuthType.KEY, AuthType.PASSWORD),
+                    selected = authType,
+                    onSelected = { authType = it },
+                    label = { if (it == AuthType.KEY) "SSH Key" else "Password" },
+                )
+                Spacer(Modifier.height(10.dp))
+                if (authType == AuthType.KEY) {
+                    if (sshKeys.isEmpty()) {
+                        Text(
+                            text = "No SSH keys in vault yet — create or import one in Settings.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            sshKeys.forEach { k ->
+                                val selected = selectedKeyId == k.id
+                                Surface(
+                                    onClick = { selectedKeyId = k.id },
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    },
+                                    contentColor = if (selected) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Icon(Icons.Rounded.Key, null, modifier = Modifier.size(16.dp))
+                                        Text(k.alias, style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else {
-                    Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        sshKeys.forEach { k ->
-                            FilterChip(
-                                selected = selectedKeyId == k.id,
-                                onClick = { selectedKeyId = k.id },
-                                leadingIcon = { Icon(Icons.Rounded.Key, null, modifier = Modifier.size(16.dp)) },
-                                label = { Text(k.alias) },
-                            )
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Password (stored in Tink Keystore Vault)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+
+            ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Text(
+                    text = "Hardware & Polling",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(10.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = macAddress,
+                        onValueChange = { macAddress = it },
+                        label = { Text("MAC Address for Wake-on-LAN (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = pollInterval,
+                        onValueChange = { pollInterval = it },
+                        label = { Text("Telemetry Poll Interval (sec)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = notes,
+                        onValueChange = { notes = it },
+                        label = { Text("Notes") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    val otherNodes = allServers.filter { it.id != initial.id }
+                    if (otherNodes.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "SSH Jump Host / Bastion (optional)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            val directSelected = jumpHostId == null
+                            Surface(
+                                onClick = { jumpHostId = null },
+                                shape = RoundedCornerShape(999.dp),
+                                color = if (directSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                },
+                                contentColor = if (directSelected) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            ) {
+                                Text(
+                                    text = "Direct",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                )
+                            }
+                            otherNodes.forEach { j ->
+                                val selected = jumpHostId == j.id
+                                Surface(
+                                    onClick = { jumpHostId = j.id },
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    },
+                                    contentColor = if (selected) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                ) {
+                                    Text(
+                                        text = j.name,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            } else {
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password (stored in Tink Keystore Vault)") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-
-            OutlinedTextField(value = macAddress, onValueChange = { macAddress = it }, label = { Text("MAC Address for Wake-on-LAN (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = pollInterval, onValueChange = { pollInterval = it }, label = { Text("Telemetry Poll Interval (sec)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text("Notes") }, modifier = Modifier.fillMaxWidth())
-
-            val otherNodes = allServers.filter { it.id != initial.id }
-            if (otherNodes.isNotEmpty()) {
-                Text("SSH Jump Host / Bastion (optional)", style = MaterialTheme.typography.labelMedium)
-                Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FilterChip(selected = jumpHostId == null, onClick = { jumpHostId = null }, label = { Text("Direct") })
-                    otherNodes.forEach { j ->
-                        FilterChip(selected = jumpHostId == j.id, onClick = { jumpHostId = j.id }, label = { Text(j.name) })
-                    }
-                }
-            }
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Simulated Demo Mode Node", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = isSimulated, onCheckedChange = { isSimulated = it })
             }
 
             if (isTesting) {
                 LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
-            testStatus?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            AnimatedVisibility(visible = testStatus != null) {
+                testStatus?.let { msg ->
+                    val isFailed = msg.startsWith("Failed", ignoreCase = true)
+                    Surface(
+                        color = if (isFailed) {
+                            MaterialTheme.colorScheme.errorContainer
+                        } else {
+                            MaterialTheme.colorScheme.primaryContainer
+                        },
+                        contentColor = if (isFailed) {
+                            MaterialTheme.colorScheme.onErrorContainer
+                        } else {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        )
+                    }
+                }
             }
 
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalButton(
                     onClick = { onTest(buildServer(), password.takeIf { it.isNotEmpty() }) },
                     enabled = primaryHost.isNotBlank() && !isTesting,
+                    shape = RoundedCornerShape(999.dp),
                     modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.Rounded.Lan, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("Test SSH")
                 }
                 Button(
                     onClick = { onSave(buildServer(), password.takeIf { it.isNotEmpty() }) },
                     enabled = primaryHost.isNotBlank(),
+                    shape = RoundedCornerShape(999.dp),
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("Save Node")
@@ -920,35 +2133,97 @@ private fun HostKeyChallengeDialog(
     val design = LocalGlassrackDesign.current
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(28.dp),
         icon = {
-            Icon(
-                Icons.Rounded.Security,
-                contentDescription = null,
-                tint = if (challenge.isMismatch) design.statusFault else design.statusWarn,
+            ExpressiveShapeBadge(
+                shape = if (challenge.isMismatch) {
+                    ExpressiveBadgeShape.SoftBurst
+                } else {
+                    ExpressiveBadgeShape.Cookie9Sided
+                },
+                containerColor = if (challenge.isMismatch) {
+                    design.statusFaultContainer
+                } else {
+                    design.statusWarnContainer
+                },
+                contentColor = if (challenge.isMismatch) {
+                    design.onStatusFaultContainer
+                } else {
+                    design.onStatusWarnContainer
+                },
+                size = 48.dp,
+                icon = Icons.Rounded.Security,
             )
         },
         title = {
-            Text(if (challenge.isMismatch) "HOST KEY CHANGED (MITM WARNING)" else "Verify SSH Host Fingerprint")
+            Text(
+                text = if (challenge.isMismatch) "HOST KEY CHANGED" else "Verify SSH Host Fingerprint",
+                style = MaterialTheme.typography.headlineSmall,
+            )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Host: ${challenge.host}:${challenge.port} (${challenge.keyType})")
-                Text("Received: ${challenge.fingerprintSha256}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                challenge.expectedFingerprint?.let {
-                    Text("Expected: $it", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = design.statusFault)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "${challenge.host}:${challenge.port} (${challenge.keyType})",
+                    style = MaterialTheme.typography.titleSmall.merge(design.monoNumericStyle),
+                )
+                ExpressiveCard(
+                    tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(12.dp),
+                ) {
+                    Text(
+                        text = "Received Fingerprint",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = challenge.fingerprintSha256,
+                        style = MaterialTheme.typography.bodySmall.merge(design.monoNumericStyle),
+                    )
+                }
+                challenge.expectedFingerprint?.let { expected ->
+                    ExpressiveCard(
+                        tonalContainerColor = design.statusFaultContainer,
+                        shape = RoundedCornerShape(16.dp),
+                        contentPadding = PaddingValues(12.dp),
+                    ) {
+                        Text(
+                            text = "Expected Fingerprint",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = design.onStatusFaultContainer,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = expected,
+                            style = MaterialTheme.typography.bodySmall.merge(design.monoNumericStyle),
+                            color = design.onStatusFaultContainer,
+                        )
+                    }
                 }
             }
         },
         confirmButton = {
             Button(
                 onClick = onTrust,
-                colors = if (challenge.isMismatch) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
+                shape = RoundedCornerShape(999.dp),
+                colors = if (challenge.isMismatch) {
+                    ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    )
+                } else {
+                    ButtonDefaults.buttonColors()
+                },
             ) {
                 Text(if (challenge.isMismatch) "Override & Trust" else "Trust Fingerprint")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Block") }
+            TextButton(onClick = onDismiss) {
+                Text("Block")
+            }
         },
     )
 }

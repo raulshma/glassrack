@@ -1,6 +1,9 @@
 package com.example.glassrack.core.model
 
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlin.math.roundToInt
+import kotlin.time.Instant
 
 object Formatters {
     fun formatBytes(bytes: Long, unit: StorageUnit = StorageUnit.BINARY_GIB): String {
@@ -60,5 +63,16 @@ object Formatters {
             durationMs < 60_000L -> "${((durationMs / 100.0).roundToInt() / 10.0)}s"
             else -> "${durationMs / 60_000}m ${(durationMs % 60_000) / 1_000}s"
         }
+    }
+
+    /** Formats an epoch millisecond timestamp in the local timezone as `MMM dd, HH:mm:ss`. */
+    fun formatTimestamp(epochMs: Long): String {
+        val dt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
+        val month = dt.month.name.take(3).lowercase().replaceFirstChar { it.uppercaseChar() }
+        val day = dt.day.toString().padStart(2, '0')
+        val hh = dt.hour.toString().padStart(2, '0')
+        val mm = dt.minute.toString().padStart(2, '0')
+        val ss = dt.second.toString().padStart(2, '0')
+        return "$month $day, $hh:$mm:$ss"
     }
 }

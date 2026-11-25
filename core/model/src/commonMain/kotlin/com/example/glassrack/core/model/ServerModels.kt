@@ -130,7 +130,6 @@ data class Server(
     val preferredWifiSsids: List<String> = emptyList(),
     val notes: String = "",
     val sortOrder: Int = 0,
-    val isSimulated: Boolean = false,
     val capabilities: OsCapabilities = OsCapabilities(),
     val customProbes: List<CustomProbeDefinition> = emptyList(),
 )

@@ -33,6 +33,8 @@ data class TerminalUiState(
     val snippets: List<Snippet> = emptyList(),
     val preferences: UserPreferences = UserPreferences(),
     val broadcastEnabled: Boolean = false,
+    val ctrlLatched: Boolean = false,
+    val altLatched: Boolean = false,
     val showSnippetsDrawer: Boolean = false,
     val showServerPicker: Boolean = false,
     val pendingSnippetVariables: Pair<Snippet, List<String>>? = null,
@@ -47,6 +49,7 @@ class TerminalViewModel(
     private val _tabs = MutableStateFlow<List<TerminalTabSession>>(emptyList())
     private val _activeTabId = MutableStateFlow<String?>(null)
     private val _broadcast = MutableStateFlow(false)
+    private val _modifiers = MutableStateFlow(false to false)
     private val _showSnippets = MutableStateFlow(false)
     private val _showPicker = MutableStateFlow(false)
     private val _pendingVars = MutableStateFlow<Pair<Snippet, List<String>>?>(null)
@@ -59,6 +62,7 @@ class TerminalViewModel(
         repository.snippets,
         repository.preferences,
         _broadcast,
+        _modifiers,
         _showSnippets,
         _showPicker,
         _pendingVars,
@@ -73,11 +77,13 @@ class TerminalViewModel(
         val snippets = arr[3] as List<Snippet>
         val prefs = arr[4] as UserPreferences
         val broadcast = arr[5] as Boolean
-        val showSnip = arr[6] as Boolean
-        val showPick = arr[7] as Boolean
         @Suppress("UNCHECKED_CAST")
-        val pendingVars = arr[8] as Pair<Snippet, List<String>>?
-        val err = arr[9] as String?
+        val modifiers = arr[6] as Pair<Boolean, Boolean>
+        val showSnip = arr[7] as Boolean
+        val showPick = arr[8] as Boolean
+        @Suppress("UNCHECKED_CAST")
+        val pendingVars = arr[9] as Pair<Snippet, List<String>>?
+        val err = arr[10] as String?
         TerminalUiState(
             tabs = tabs,
             activeTabId = activeId,
@@ -85,6 +91,8 @@ class TerminalViewModel(
             snippets = snippets,
             preferences = prefs,
             broadcastEnabled = broadcast,
+            ctrlLatched = modifiers.first,
+            altLatched = modifiers.second,
             showSnippetsDrawer = showSnip,
             showServerPicker = showPick,
             pendingSnippetVariables = pendingVars,
@@ -116,7 +124,10 @@ class TerminalViewModel(
         }
     }
 
-    fun selectTab(tabId: String) { _activeTabId.value = tabId }
+    fun selectTab(tabId: String) {
+        _activeTabId.value = tabId
+        _modifiers.value = false to false
+    }
 
     fun closeTab(tabId: String) {
         val current = _tabs.value
@@ -126,10 +137,16 @@ class TerminalViewModel(
         _tabs.value = remaining
         if (_activeTabId.value == tabId) {
             _activeTabId.value = remaining.lastOrNull()?.tabId
+            _modifiers.value = false to false
         }
     }
 
     fun sendExtraKey(code: ExtraKeyCode) {
+        when (code) {
+            ExtraKeyCode.CTRL -> _modifiers.update { (ctrl, alt) -> !ctrl to alt }
+            ExtraKeyCode.ALT -> _modifiers.update { (ctrl, alt) -> ctrl to !alt }
+            else -> Unit
+        }
         if (_broadcast.value) {
             _tabs.value.forEach { it.controller.sendExtraKey(code) }
         } else {
@@ -138,6 +155,7 @@ class TerminalViewModel(
     }
 
     fun sendText(text: String) {
+        _modifiers.value = false to false
         if (_broadcast.value) {
             _tabs.value.forEach { it.controller.sendText(text) }
         } else {

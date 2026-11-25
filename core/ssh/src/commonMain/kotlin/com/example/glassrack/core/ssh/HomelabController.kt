@@ -43,7 +43,6 @@ class HomelabController(
     private val sshClient: PlatformSshClient,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val simulator = DemoClusterSimulator()
     private val sampleCache = TelemetrySampleCache()
 
     private val _runtimeStates = MutableStateFlow<Map<String, ServerRuntimeState>>(emptyMap())
@@ -61,7 +60,7 @@ class HomelabController(
 
     init {
         scope.launch {
-            repository.ensureSeeded(currentTimeEpochMs())
+            repository.ensureSeeded()
         }
         scope.launch {
             repository.servers.collect { servers ->
@@ -118,15 +117,6 @@ class HomelabController(
     }
 
     suspend fun pollServerOnce(server: Server) {
-        val now = currentTimeEpochMs()
-        if (server.isSimulated) {
-            val snapshot = simulator.sampleSnapshot(server, now)
-            repository.recordMetricSnapshot(snapshot)
-            updateSuccessState(server, snapshot)
-            evaluateAlerts(server, snapshot)
-            return
-        }
-
         _runtimeStates.update { map ->
             val cur = map[server.id] ?: ServerRuntimeState(server)
             if (cur.health == ServerHealth.UNKNOWN) {
@@ -239,7 +229,6 @@ class HomelabController(
     }
 
     suspend fun testServerConnection(server: Server, trustFirst: Boolean): Result<HostKeyChallenge?> {
-        if (server.isSimulated) return Result.success(null)
         return sshClient.testConnection(server, latestServers, trustFingerprintOnFirstConnect = trustFirst)
     }
 
@@ -254,12 +243,7 @@ class HomelabController(
         val started = currentTimeEpochMs()
         val jobId = repository.startJob(server.id, server.name, actionTitle, command, started)
         return try {
-            val result = if (server.isSimulated) {
-                delay(350)
-                repository.appendJobOutput(jobId, "$ $command\n", 350)
-                val out = "Simulated execution on ${server.name}: OK"
-                SshExecResult(0, out, "", 420L)
-            } else if (streaming) {
+            val result = if (streaming) {
                 sshClient.executeStreaming(server, latestServers, command) { chunk ->
                     repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
                 }
@@ -332,7 +316,6 @@ class HomelabController(
     }
 
     suspend fun fetchContainers(server: Server): List<ContainerInfo> {
-        if (server.isSimulated) return simulator.getContainers(server.id)
         val usePodman = !server.capabilities.hasDocker && server.capabilities.hasPodman
         val runtime = if (usePodman) ContainerRuntime.PODMAN else ContainerRuntime.DOCKER
         val res = sshClient.execute(server, latestServers, TelemetryProbes.dockerContainersScript(usePodman), 15_000L)
@@ -366,13 +349,8 @@ class HomelabController(
         }
         val started = currentTimeEpochMs()
         val jobId = repository.startJob(server.id, server.name, "${action.label} ${container.name}", cmd, started)
-        val result = if (server.isSimulated) {
-            delay(450)
-            simulator.mutateContainer(server.id, container.id, action)
-        } else {
-            sshClient.executeStreaming(server, latestServers, cmd) { chunk ->
-                repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
-            }
+        val result = sshClient.executeStreaming(server, latestServers, cmd) { chunk ->
+            repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
         }
         repository.finishJob(
             jobId = jobId,
@@ -411,13 +389,8 @@ class HomelabController(
         }
         val started = currentTimeEpochMs()
         val jobId = repository.startJob(server.id, server.name, "Compose $verb: $projectName", cmd, started)
-        val result = if (server.isSimulated) {
-            delay(650)
-            simulator.mutateComposeStack(server.id, projectName, verb != "down" && verb != "stop")
-        } else {
-            sshClient.executeStreaming(server, latestServers, cmd, 120_000L) { chunk ->
-                repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
-            }
+        val result = sshClient.executeStreaming(server, latestServers, cmd, 120_000L) { chunk ->
+            repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
         }
         repository.finishJob(
             jobId = jobId,
@@ -444,91 +417,45 @@ class HomelabController(
     }
 
     suspend fun fetchContainerLogs(server: Server, containerName: String, tail: Int = 200): String {
-        if (server.isSimulated) return simulator.containerLogs(containerName)
         val res = sshClient.execute(server, latestServers, "docker logs --tail $tail '$containerName' 2>&1", 15_000L)
         return res.stdout.ifBlank { res.stderr }
     }
 
     suspend fun fetchSystemdAndCron(server: Server): Pair<List<SystemdUnit>, List<CronEntry>> {
-        if (server.isSimulated) return simulator.getSystemdAndCron(server.id)
         val res = sshClient.execute(server, latestServers, TelemetryProbes.systemdUnitsScript(), 15_000L)
         return TelemetryParsers.parseSystemdAndCron(res.stdout)
     }
 
     suspend fun performSystemdAction(server: Server, unitName: String, verb: String): SshExecResult {
         val cmd = "sudo -n systemctl $verb '$unitName' || systemctl $verb '$unitName'"
-        return if (server.isSimulated) {
-            val res = simulator.mutateSystemdUnit(server.id, unitName, verb)
-            repository.recordAudit(
-                timestampEpochMs = currentTimeEpochMs(),
-                serverId = server.id,
-                serverNameSnapshot = server.name,
-                category = AuditCategory.SERVICE,
-                actionTitle = "Service $verb: $unitName",
-                rawCommand = cmd,
-                triggerSource = TriggerSource.UI,
-                outcome = AuditOutcome.SUCCESS,
-                exitCode = 0,
-                durationMs = res.durationMs,
-                outputSnippet = res.stdout,
-            )
-            res
-        } else {
-            executeAuditedAction(server, AuditCategory.SERVICE, "Service $verb: $unitName", cmd)
-        }
+        return executeAuditedAction(server, AuditCategory.SERVICE, "Service $verb: $unitName", cmd)
     }
 
     suspend fun fetchProcesses(server: Server): List<ProcessInfo> {
-        if (server.isSimulated) return simulator.getProcesses(server.id)
         val res = sshClient.execute(server, latestServers, TelemetryProbes.processesScript(), 10_000L)
         return TelemetryParsers.parseProcesses(res.stdout)
     }
 
     suspend fun sendProcessSignal(server: Server, process: ProcessInfo, signal: ProcessSignal): SshExecResult {
         val cmd = "kill -${signal.code} ${process.pid}"
-        return if (server.isSimulated) {
-            val res = simulator.sendProcessSignal(process.pid, signal)
-            repository.recordAudit(
-                timestampEpochMs = currentTimeEpochMs(),
-                serverId = server.id,
-                serverNameSnapshot = server.name,
-                category = AuditCategory.PROCESS,
-                actionTitle = "Signal ${signal.signalName} PID ${process.pid}",
-                rawCommand = cmd,
-                triggerSource = TriggerSource.UI,
-                outcome = AuditOutcome.SUCCESS,
-                exitCode = 0,
-                durationMs = res.durationMs,
-                outputSnippet = res.stdout,
-            )
-            res
-        } else {
-            executeAuditedAction(server, AuditCategory.PROCESS, "Signal ${signal.signalName} PID ${process.pid}", cmd)
-        }
+        return executeAuditedAction(server, AuditCategory.PROCESS, "Signal ${signal.signalName} PID ${process.pid}", cmd)
     }
 
     suspend fun fetchNetworkDetails(server: Server): Pair<List<NetworkInterfaceInfo>, List<NetworkPortInfo>> {
-        if (server.isSimulated) return simulator.getNetworkDetails(server.id)
         val res = sshClient.execute(server, latestServers, TelemetryProbes.networkDetailScript(), 10_000L)
         return TelemetryParsers.parseNetworkDetails(res.stdout)
     }
 
     suspend fun listFiles(server: Server, remotePath: String): List<RemoteFileEntry> {
-        if (server.isSimulated) return simulator.listFiles(remotePath)
         return sshClient.listFiles(server, latestServers, remotePath)
     }
 
     suspend fun readFileText(server: Server, remotePath: String): String {
-        if (server.isSimulated) return simulator.readFile(remotePath)
         return sshClient.readFileText(server, latestServers, remotePath)
     }
 
     suspend fun saveFileWithBackup(server: Server, remotePath: String, newContent: String) {
-        if (server.isSimulated) {
-            simulator.writeFile(remotePath, newContent)
-        } else {
-            sshClient.writeFileTextWithBackup(server, latestServers, remotePath, newContent)
-        }
+        sshClient.writeFileTextWithBackup(server, latestServers, remotePath, newContent)
         repository.recordAudit(
             timestampEpochMs = currentTimeEpochMs(),
             serverId = server.id,
@@ -545,9 +472,6 @@ class HomelabController(
     }
 
     suspend fun deployPublicKey(server: Server, publicKey: String): SshExecResult {
-        if (server.isSimulated) {
-            return executeAuditedAction(server, AuditCategory.CONFIG, "Deploy SSH Public Key", "ssh-copy-id -> ~/.ssh/authorized_keys")
-        }
         return sshClient.deployPublicKey(server, latestServers, publicKey)
     }
 
@@ -558,7 +482,7 @@ class HomelabController(
         return runCatching {
             val relayId = server.wolRelayServerId
             val relayServer = relayId?.let { id -> latestServers.firstOrNull { it.id == id } }
-            if (relayServer != null && !relayServer.isSimulated) {
+            if (relayServer != null) {
                 val cmd = "wakeonlan ${server.macAddress} || etherwake ${server.macAddress} || python3 -c \"import socket; m=bytes.fromhex('${server.macAddress.replace(":", "").replace("-", "")}'); s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1); s.sendto(b'\\xff'*6+m*16,('255.255.255.255',9))\""
                 executeAuditedAction(relayServer, AuditCategory.POWER, "Relay WoL -> ${server.name}", cmd, triggerSource)
             } else {
@@ -584,13 +508,11 @@ class HomelabController(
         val isOpen = _activeTunnels.value.contains(tunnelId)
         return runCatching {
             if (isOpen) {
-                if (!server.isSimulated) sshClient.closePortForward(tunnelId)
+                sshClient.closePortForward(tunnelId)
                 _activeTunnels.update { it - tunnelId }
                 false
             } else {
-                if (!server.isSimulated) {
-                    sshClient.openLocalPortForward(tunnelId, server, latestServers, localPort, remoteHost, remotePort)
-                }
+                sshClient.openLocalPortForward(tunnelId, server, latestServers, localPort, remoteHost, remotePort)
                 _activeTunnels.update { it + tunnelId }
                 repository.recordAudit(
                     timestampEpochMs = currentTimeEpochMs(),
@@ -622,11 +544,7 @@ class HomelabController(
             exitCode = 0,
             durationMs = 0L,
         )
-        return if (server.isSimulated) {
-            simulator.openDemoShell(server)
-        } else {
-            sshClient.openShell(server, latestServers, cols, rows)
-        }
+        return sshClient.openShell(server, latestServers, cols, rows)
     }
 
     suspend fun rebootOrShutdown(server: Server, reboot: Boolean): SshExecResult {

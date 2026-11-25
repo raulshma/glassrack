@@ -25,6 +25,7 @@ import com.example.glassrack.core.model.SshKeyRecord
 import com.example.glassrack.core.model.TileType
 import com.example.glassrack.core.model.TriggerSource
 import com.example.glassrack.core.model.UserPreferences
+import com.example.glassrack.core.model.currentTimeEpochMs
 import com.example.glassrack.core.security.CommandSanitizer
 import com.example.glassrack.core.security.SecureVault
 import kotlinx.coroutines.flow.Flow
@@ -108,27 +109,14 @@ class GlassrackRepository(
                 .mapValues { (_, items) -> items.sortedBy { it.timestampEpochMs }.takeLast(40) }
         }
 
-    suspend fun ensureSeeded(nowEpochMs: Long) {
-        if (db.serverDao().count() == 0 && preferencesStore.current().demoModeEnabled) {
-            db.serverDao().upsertAll(SeedData.defaultServers.map { it.toEntity() })
-            db.dashboardDao().upsertDashboards(
-                SeedData.defaultDashboards.map { DashboardProfileEntity(it.id, it.title, it.sortOrder) },
-            )
-            db.dashboardDao().upsertTiles(SeedData.defaultTiles.map { it.toEntity() })
-            db.snippetDao().upsertAll(SeedData.defaultSnippets.map { it.toEntity() })
-            db.alertRuleDao().upsertAll(SeedData.defaultAlertRules.map { it.toEntity() })
-            recordAudit(
-                timestampEpochMs = nowEpochMs,
-                serverId = null,
-                serverNameSnapshot = "Glassrack",
-                category = AuditCategory.SYSTEM,
-                actionTitle = "Initialized Demo Homelab Cluster",
-                rawCommand = "seed --cluster raspberrypi+docker-compose",
-                triggerSource = TriggerSource.UI,
-                outcome = AuditOutcome.SUCCESS,
-                exitCode = 0,
-                durationMs = 12L,
-                outputSnippet = "Loaded 3 nodes (rpi5-core, media-box, rpi4-sensor), 3 dashboards, 4 snippets.",
+    suspend fun ensureSeeded() {
+        if (db.dashboardDao().getDashboardsOnce().isEmpty()) {
+            db.dashboardDao().upsertDashboard(
+                DashboardProfileEntity(
+                    id = "dash-main",
+                    title = "Main Rack",
+                    sortOrder = 0,
+                ),
             )
         }
     }
@@ -267,6 +255,27 @@ class GlassrackRepository(
     suspend fun verifyAuditChain(): AuditChainVerification {
         val chronological = db.auditDao().getAllChronological().map { it.toDomain() }
         return hasher.verifyChain(chronological)
+    }
+
+    /** Prunes audit entries older than [retentionDays] and re-anchors remaining chain links if any were removed. */
+    suspend fun pruneAuditLogs(retentionDays: Int): Int = auditMutex.withLock {
+        val safeDays = retentionDays.coerceAtLeast(1)
+        val cutoff = currentTimeEpochMs() - safeDays.toLong() * 86_400_000L
+        val before = db.auditDao().getAllChronological()
+        db.auditDao().pruneOlderThan(cutoff)
+        val remaining = db.auditDao().getAllChronological().map { it.toDomain() }
+        val removedCount = (before.size - remaining.size).coerceAtLeast(0)
+        if (removedCount > 0 && remaining.isNotEmpty()) {
+            var prevHash = AuditChainHasher.GENESIS_HASH
+            for (entry in remaining) {
+                val newHash = hasher.computeEntryHash(entry, prevHash)
+                if (entry.prevHash != prevHash || entry.entryHash != newHash) {
+                    db.auditDao().updateHashes(entry.id, prevHash, newHash)
+                }
+                prevHash = newHash
+            }
+        }
+        removedCount
     }
 
     suspend fun exportAuditAsJson(): String {
@@ -466,7 +475,6 @@ class GlassrackRepository(
         preferredWifiSsids = runCatching { json.decodeFromString<List<String>>(preferredWifiSsidsJson) }.getOrDefault(emptyList()),
         notes = notes,
         sortOrder = sortOrder,
-        isSimulated = isSimulated,
         capabilities = runCatching { json.decodeFromString<OsCapabilities>(capabilitiesJson) }.getOrDefault(OsCapabilities()),
         customProbes = runCatching { json.decodeFromString<List<CustomProbeDefinition>>(customProbesJson) }.getOrDefault(emptyList()),
     )
@@ -492,7 +500,7 @@ class GlassrackRepository(
         preferredWifiSsidsJson = json.encodeToString(preferredWifiSsids),
         notes = notes,
         sortOrder = sortOrder,
-        isSimulated = isSimulated,
+        isSimulated = false,
         capabilitiesJson = json.encodeToString(capabilities),
         customProbesJson = json.encodeToString(customProbes),
     )

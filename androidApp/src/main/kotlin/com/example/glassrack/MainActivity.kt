@@ -1,14 +1,22 @@
 package com.example.glassrack
 
 import android.content.Intent
+import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import com.example.glassrack.core.security.ActivityHolder
 
@@ -18,13 +26,39 @@ class MainActivity : FragmentActivity() {
     private var deepLinkServerId by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(
+                AndroidColor.TRANSPARENT,
+                AndroidColor.TRANSPARENT,
+            ),
+            navigationBarStyle = SystemBarStyle.auto(
+                AndroidColor.TRANSPARENT,
+                AndroidColor.TRANSPARENT,
+            ),
+        )
         super.onCreate(savedInstanceState)
         parseIntent(intent)
 
         setContent {
             val ctx = LocalContext.current
-            val dynamicPrimary = dynamicDarkColorScheme(ctx).primary
+            val systemDark = isSystemInDarkTheme()
+            var isAppDark by remember(systemDark) { mutableStateOf(systemDark) }
+            val view = LocalView.current
+
+            if (!view.isInEditMode) {
+                SideEffect {
+                    val controller = WindowCompat.getInsetsController(window, view)
+                    controller.isAppearanceLightStatusBars = !isAppDark
+                    controller.isAppearanceLightNavigationBars = !isAppDark
+                }
+            }
+
+            val dynamicPrimary = if (isAppDark) {
+                dynamicDarkColorScheme(ctx).primary
+            } else {
+                dynamicLightColorScheme(ctx).primary
+            }
+
             App(
                 deepLinkServerId = deepLinkServerId,
                 deepLinkDestination = deepLinkDest,
@@ -33,6 +67,7 @@ class MainActivity : FragmentActivity() {
                     deepLinkDest = null
                     deepLinkServerId = null
                 },
+                onDarkThemeChanged = { isAppDark = it },
             )
         }
     }

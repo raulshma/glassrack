@@ -179,6 +179,12 @@ class ServersViewModel(
         }
     }
 
+    fun pollServer(server: Server) {
+        viewModelScope.launch {
+            controller.pollServerOnce(server)
+        }
+    }
+
     fun rebootOrShutdown(server: Server, reboot: Boolean) {
         viewModelScope.launch {
             val prefs = uiState.value.preferences

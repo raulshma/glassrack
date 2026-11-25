@@ -119,6 +119,9 @@ interface AuditDao {
 
     @Query("DELETE FROM audit_entries WHERE timestampEpochMs < :cutoffEpochMs")
     suspend fun pruneOlderThan(cutoffEpochMs: Long)
+
+    @Query("UPDATE audit_entries SET prevHash = :prevHash, entryHash = :entryHash WHERE id = :id")
+    suspend fun updateHashes(id: String, prevHash: String, entryHash: String)
 }
 
 @Dao

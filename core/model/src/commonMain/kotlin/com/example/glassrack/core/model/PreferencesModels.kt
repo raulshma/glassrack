@@ -72,11 +72,11 @@ data class TerminalAppearance(
 @Immutable
 @Serializable
 data class UserPreferences(
-    val themeVariant: ThemeVariant = ThemeVariant.PRISMATIC_RACK,
-    val seedColorArgb: Long = 0xFF00B4D8,
+    val themeVariant: ThemeVariant = ThemeVariant.DYNAMIC_SYSTEM,
+    val seedColorArgb: Long = 0xFF006B7D,
     val densityMode: DensityMode = DensityMode.EXPRESSIVE,
     val useExpressiveMotion: Boolean = true,
-    val darkModeOverride: Boolean? = true, // Prismatic Rack defaults dark-first; null = system
+    val darkModeOverride: Boolean? = null, // null = follow system light/dark
     val safeReadOnlyMode: Boolean = false,
     val biometricAppLock: Boolean = false,
     val destructiveConfirmation: ConfirmationLevel = ConfirmationLevel.HOLD_TO_CONFIRM,
@@ -86,7 +86,6 @@ data class UserPreferences(
     val storageUnit: StorageUnit = StorageUnit.BINARY_GIB,
     val auditRetentionDays: Int = 90,
     val recordTerminalCommands: Boolean = true,
-    val demoModeEnabled: Boolean = true,
     val terminalAppearance: TerminalAppearance = TerminalAppearance(),
 )
 

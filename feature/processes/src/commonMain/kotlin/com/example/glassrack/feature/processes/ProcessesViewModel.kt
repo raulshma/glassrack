@@ -142,18 +142,13 @@ class ProcessesViewModel(
     fun openJournal(server: Server, unit: SystemdUnit) {
         viewModelScope.launch {
             _uiState.update { it.copy(journalUnit = unit, journalLogs = "Loading journalctl for ${unit.name}...") }
-            val text = if (server.isSimulated) {
-                "Nov 25 10:01:12 ${server.name} systemd[1]: Started ${unit.description}.\nNov 25 10:02:44 ${server.name} ${unit.name}: Worker healthcheck nominal."
-            } else {
-                val res = controller.executeAuditedAction(
-                    server = server,
-                    category = AuditCategory.SERVICE,
-                    actionTitle = "Inspect journalctl ${unit.name}",
-                    command = "journalctl -u '${unit.name}' -n 80 --no-pager",
-                )
-                res.stdout.ifBlank { res.stderr }
-            }
-            _uiState.update { it.copy(journalLogs = text) }
+            val res = controller.executeAuditedAction(
+                server = server,
+                category = AuditCategory.SERVICE,
+                actionTitle = "Inspect journalctl ${unit.name}",
+                command = "journalctl -u '${unit.name}' -n 80 --no-pager",
+            )
+            _uiState.update { it.copy(journalLogs = res.stdout.ifBlank { res.stderr }) }
         }
     }
 

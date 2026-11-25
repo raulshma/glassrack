@@ -17,7 +17,7 @@ actual class PlatformSshClient actual constructor(
     ): Result<HostKeyChallenge?> = Result.failure(UnsupportedOperationException("Native iOS SSH transport pending libssh2 integration"))
 
     override suspend fun execute(server: Server, allServers: List<Server>, command: String, timeoutMs: Long): SshExecResult =
-        SshExecResult(1, "", "Live SSH on iOS requires libssh2 actual; enable Demo Mode or run on Android.", 0L)
+        SshExecResult(1, "", "Live SSH is not yet supported on iOS; use Android for live SSH transport.", 0L)
 
     override suspend fun executeStreaming(
         server: Server,
@@ -28,7 +28,7 @@ actual class PlatformSshClient actual constructor(
     ): SshExecResult = execute(server, allServers, command, timeoutMs)
 
     override suspend fun openShell(server: Server, allServers: List<Server>, cols: Int, rows: Int): SshShellSession =
-        throw UnsupportedOperationException("Use Demo Mode or Android target for live SSH PTY")
+        throw UnsupportedOperationException("Live SSH is not yet supported on iOS; use Android for live SSH transport.")
 
     override suspend fun listFiles(server: Server, allServers: List<Server>, remotePath: String): List<RemoteFileEntry> = emptyList()
 
