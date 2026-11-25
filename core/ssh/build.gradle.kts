@@ -27,6 +27,7 @@ kotlin {
             implementation(libs.kermit)
         }
         androidMain.dependencies {
+            implementation(libs.bcprov.jdk18on)
             implementation(libs.jsch)
             implementation(libs.ktor.client.okhttp)
         }

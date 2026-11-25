@@ -16,6 +16,7 @@ androidx-sqlite = "2.7.1"
 androidx-testExt = "1.3.0"
 androidx-testRunner = "1.7.0"
 androidx-work = "2.12.0"
+bouncycastle = "1.81"
 composeMultiplatform = "1.13.0-rc01"
 composeIcons = "1.7.3"
 filekit = "0.17.1"
@@ -94,6 +95,7 @@ vico-compose-glance = { module = "com.patrykandpatrick.vico:compose-glance", ver
 reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
 filekit-dialogs-compose = { module = "io.github.vinceglb:filekit-dialogs-compose", version.ref = "filekit" }
 
+bcprov-jdk18on = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 jsch = { module = "com.github.mwiede:jsch", version.ref = "jsch" }
 termlib = { module = "org.connectbot:termlib", version.ref = "termlib" }
 tink-android = { module = "com.google.crypto.tink:tink-android", version.ref = "tink" }

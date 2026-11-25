@@ -29,11 +29,18 @@ actual object SshKeyGenerator {
             val privOut = ByteArrayOutputStream()
             val pubOut = ByteArrayOutputStream()
             val passBytes = passphrase?.takeIf { it.isNotEmpty() }?.encodeToByteArray()
-            pair.writePrivateKey(privOut, passBytes)
+            if (algorithm == SshKeyAlgorithm.ED25519) {
+                // jsch cannot serialize EdDSA keys in the traditional PEM format
+                // (getPrivateKey() throws UnsupportedOperationException), so write
+                // the canonical OpenSSH v1 container instead.
+                pair.writeOpenSSHv1PrivateKey(privOut, passBytes)
+            } else {
+                pair.writePrivateKey(privOut, passBytes)
+            }
             pair.writePublicKey(pubOut, alias)
             val id = UUID.randomUUID().toString()
             val vaultRef = "ssh_key_$id"
-            val fingerprint = "SHA256:${pair.fingerPrint}"
+            val fingerprint = pair.fingerPrint
             val publicKeyStr = pubOut.toByteArray().decodeToString().trim()
             val privatePem = privOut.toByteArray().decodeToString()
             GeneratedKeyPair(
@@ -83,7 +90,7 @@ actual object SshKeyGenerator {
                     alias = alias,
                     algorithm = alg,
                     publicKeyOpenSsh = pubOut.toByteArray().decodeToString().trim(),
-                    fingerprintSha256 = "SHA256:${pair.fingerPrint}",
+                    fingerprintSha256 = pair.fingerPrint,
                     privateKeyVaultRef = "ssh_key_$id",
                     hasPassphrase = !passphrase.isNullOrEmpty(),
                     createdAtEpochMs = System.currentTimeMillis(),

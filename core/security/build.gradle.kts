@@ -27,6 +27,7 @@ kotlin {
             implementation(libs.tink.android)
             implementation(libs.androidx.biometric)
             implementation(libs.androidx.core.ktx)
+            implementation(libs.bcprov.jdk18on)
             implementation(libs.jsch)
         }
         commonTest.dependencies {

@@ -94,7 +94,6 @@ sealed interface GlassrackRoute {
     data object Overview : GlassrackRoute
     data class Servers(
         val selectedServerId: String? = null,
-        val openAddSheet: Boolean = false,
     ) : GlassrackRoute
     data class Terminal(
         val serverId: String? = null,
@@ -133,6 +132,7 @@ fun GlassrackApp(
 
     var unlocked by remember { mutableStateOf(false) }
     var fabMenuOpen by remember { mutableStateOf(false) }
+    var pendingAddNode by remember { mutableStateOf(false) }
     var pendingTermServerId by remember { mutableStateOf<String?>(null) }
     var pendingTermCmd by remember { mutableStateOf<String?>(null) }
 
@@ -183,8 +183,11 @@ fun GlassrackApp(
 
     fun openAddNodeSheet() {
         fabMenuOpen = false
-        backStack.clear()
-        backStack.add(GlassrackRoute.Servers(selectedServerId = null, openAddSheet = true))
+        pendingAddNode = true
+        if (backStack.lastOrNull() !is GlassrackRoute.Servers) {
+            backStack.clear()
+            backStack.add(GlassrackRoute.Servers())
+        }
     }
 
     GlassrackTheme(
@@ -292,6 +295,8 @@ fun GlassrackApp(
                                     },
                                     pendingTermServerId = pendingTermServerId,
                                     pendingTermCmd = pendingTermCmd,
+                                    pendingAddNode = pendingAddNode,
+                                    onConsumedOpenAddSheet = { pendingAddNode = false },
                                 )
 
                                 SpeedDialScrim(
@@ -347,6 +352,8 @@ fun GlassrackApp(
                                 },
                                 pendingTermServerId = pendingTermServerId,
                                 pendingTermCmd = pendingTermCmd,
+                                pendingAddNode = pendingAddNode,
+                                onConsumedOpenAddSheet = { pendingAddNode = false },
                             )
 
                             SpeedDialScrim(
@@ -429,6 +436,8 @@ private fun GlassrackNavDisplay(
     onConsumedPendingTerminal: () -> Unit,
     pendingTermServerId: String?,
     pendingTermCmd: String?,
+    pendingAddNode: Boolean,
+    onConsumedOpenAddSheet: () -> Unit,
 ) {
     val motionScheme = MaterialTheme.motionScheme
     val spatialSpec = motionScheme.defaultSpatialSpec<IntOffset>()
@@ -480,12 +489,8 @@ private fun GlassrackNavDisplay(
                         onSetPendingTerminal(srvId, cmd)
                         onNavigateTop(TopTab.TERMINAL)
                     },
-                    initialOpenAddSheet = route.openAddSheet,
-                    onConsumedOpenAddSheet = {
-                        if (route.openAddSheet) {
-                            backStack[backStack.lastIndex] = route.copy(openAddSheet = false)
-                        }
-                    },
+                    initialOpenAddSheet = pendingAddNode,
+                    onConsumedOpenAddSheet = onConsumedOpenAddSheet,
                 )
             }
             entry<GlassrackRoute.Terminal> {
