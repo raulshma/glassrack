@@ -1,21 +1,30 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Preserve line numbers for readable crash stack traces
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# JSch (mwiede) resolves cipher, kex, MAC, signature, and auth classes via reflection
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
+-dontwarn com.sun.jna.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.slf4j.**
+-dontwarn org.apache.logging.log4j.**
+-dontwarn org.ietf.jgss.**
+-dontwarn java.lang.foreign.**
+-dontwarn java.lang.invoke.**
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep Kotlinx Serialization descriptors / serializers across KMP modules
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep,includedescriptorclasses class com.example.glassrack.**$$serializer { *; }
+-keepclassmembers class com.example.glassrack.** {
+    *** Companion;
+}
+-keepclasseswithmembers class com.example.glassrack.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Room 3 & Glance AppWidget receivers/workers instantiated by Android framework
+-keep class com.example.glassrack.core.database.** { *; }
+-keep class com.example.glassrack.widget.** { *; }
+-keep class com.example.glassrack.worker.** { *; }
+-keep class com.example.glassrack.service.** { *; }

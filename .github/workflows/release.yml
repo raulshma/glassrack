@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g., v1.0.0)"
+        description: "Release tag to build (e.g., v0.0.1)"
         required: true
         type: string
 
@@ -113,8 +113,8 @@ jobs:
             echo "Missing release APK or AAB"
             exit 1
           fi
-          cp "$APK_SRC" "dist/glassrack-${VERSION}-release.apk"
-          cp "$AAB_SRC" "dist/glassrack-${VERSION}-release.aab"
+          cp "$APK_SRC" "dist/glassrack-${VERSION}-arm64-v8a-release.apk"
+          cp "$AAB_SRC" "dist/glassrack-${VERSION}-arm64-v8a-release.aab"
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -lh dist/
 
@@ -125,8 +125,8 @@ jobs:
           name: Glassrack ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ startsWith(steps.version.outputs.version_name, '0.') || contains(steps.version.outputs.version_name, '-') }}
           files: |
-            dist/glassrack-${{ steps.version.outputs.version_name }}-release.apk
-            dist/glassrack-${{ steps.version.outputs.version_name }}-release.aab
+            dist/glassrack-${{ steps.version.outputs.version_name }}-arm64-v8a-release.apk
+            dist/glassrack-${{ steps.version.outputs.version_name }}-arm64-v8a-release.aab
             dist/SHA256SUMS.txt

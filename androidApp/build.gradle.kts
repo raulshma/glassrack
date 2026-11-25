@@ -42,7 +42,7 @@ android {
 
     val resolvedVersionName = (providers.gradleProperty("versionName").orNull
         ?: System.getenv("GLASSRACK_VERSION_NAME")
-        ?: "1.0.0").removePrefix("v")
+        ?: "0.0.1").removePrefix("v")
     val resolvedVersionCode = (providers.gradleProperty("versionCode").orNull
         ?: System.getenv("GLASSRACK_VERSION_CODE"))
         ?.toIntOrNull()
@@ -63,6 +63,9 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = resolvedVersionCode
         versionName = resolvedVersionName
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
     signingConfigs {
         if (!keystorePath.isNullOrBlank() &&
@@ -89,7 +92,8 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.findByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
