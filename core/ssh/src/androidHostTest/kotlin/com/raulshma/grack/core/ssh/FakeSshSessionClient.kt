@@ -31,7 +31,8 @@ internal class FakeSshSessionClient : SshSessionClient {
     data class StreamRequest(
         val server: Server,
         val command: String,
-        val timeoutMs: Long,
+        /** Null means untimed (follow streams); the fake records exactly what the controller sent. */
+        val timeoutMs: Long?,
         val stdinText: String?,
     )
 
@@ -57,6 +58,12 @@ internal class FakeSshSessionClient : SshSessionClient {
 
     var executeHandler: suspend (ExecRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
     var streamHandler: suspend (StreamRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
+
+    /**
+     * When set, invoked with the stream's [SshSessionClient.executeStreaming] chunk callback
+     * before [streamHandler] runs, so tests can emit live chunks into the job output.
+     */
+    var streamChunkSource: (suspend (onChunk: suspend (String) -> Unit) -> Unit)? = null
     var writeFileHandler: suspend (WriteRequest) -> Boolean = { true }
     var uploadFileHandler: suspend (UploadRequest) -> Unit = { }
     var readFileHandler: suspend (server: Server, remotePath: String) -> String = { _, _ -> "" }
@@ -78,12 +85,13 @@ internal class FakeSshSessionClient : SshSessionClient {
         server: Server,
         allServers: List<Server>,
         command: String,
-        timeoutMs: Long,
+        timeoutMs: Long?,
         stdinText: String?,
         onChunk: suspend (String) -> Unit,
     ): SshExecResult {
         val request = StreamRequest(server, command, timeoutMs, stdinText)
         streamRequests += request
+        streamChunkSource?.invoke(onChunk)
         return streamHandler(request)
     }
 
@@ -160,6 +168,12 @@ internal class FakeSshSessionClient : SshSessionClient {
 
     override suspend fun disconnectIdle(maxIdleMs: Long) {
         disconnectIdleCalls += maxIdleMs
+        // Belt and braces: if a test ever leaks the controller's re-arming prune loop into
+        // runTest's quiescence drain, keep this bookkeeping bounded instead of growing a
+        // list forever (the test fails on time anyway; no OOM on top of it).
+        while (disconnectIdleCalls.size > 20) {
+            disconnectIdleCalls.removeAt(0)
+        }
     }
 }
 

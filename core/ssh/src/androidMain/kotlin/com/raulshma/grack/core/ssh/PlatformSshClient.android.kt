@@ -270,7 +270,7 @@ actual class PlatformSshClient actual constructor(
         server: Server,
         allServers: List<Server>,
         command: String,
-        timeoutMs: Long,
+        timeoutMs: Long?,
         stdinText: String?,
         onChunk: suspend (String) -> Unit,
     ): SshExecResult {
@@ -283,44 +283,56 @@ actual class PlatformSshClient actual constructor(
         val stderrBuilder = StringBuilder()
         var exitCode = -1
 
+        // The poll loop suspends on delay() every iteration, so both a deadline and the
+        // caller's cancellation are observed promptly; `finally` always disconnects.
+        val readUntilClosed: suspend () -> Unit = {
+            withContext(Dispatchers.IO) {
+                channel.setCommand(command)
+                if (stdinText != null) {
+                    channel.setInputStream(ByteArrayInputStream(stdinText.encodeToByteArray()))
+                }
+                val inStream = channel.inputStream
+                val errStream = channel.errStream
+                channel.connect(5_000)
+                val buffer = ByteArray(2048)
+                while (true) {
+                    while (inStream.available() > 0) {
+                        val read = inStream.read(buffer)
+                        if (read <= 0) break
+                        val chunk = stdoutDecoder.decode(buffer, read)
+                        if (stdoutBuilder.length < MAX_STREAMED_OUTPUT_CHARS) stdoutBuilder.append(chunk)
+                        onChunk(chunk)
+                    }
+                    while (errStream.available() > 0) {
+                        val read = errStream.read(buffer)
+                        if (read <= 0) break
+                        val chunk = stderrDecoder.decode(buffer, read)
+                        if (stderrBuilder.length < MAX_STREAMED_OUTPUT_CHARS) stderrBuilder.append(chunk)
+                        onChunk(chunk)
+                    }
+                    if (channel.isClosed) {
+                        if (inStream.available() > 0 || errStream.available() > 0) continue
+                        exitCode = channel.exitStatus
+                        break
+                    }
+                    delay(STREAM_POLL_INTERVAL_MS)
+                }
+                for (decoder in listOf(stdoutDecoder, stderrDecoder)) {
+                    val tail = decoder.flush()
+                    if (tail.isNotEmpty()) onChunk(tail)
+                }
+                channel.disconnect()
+            }
+        }
+
         try {
-            withTimeout(timeoutMs) {
-                withContext(Dispatchers.IO) {
-                    channel.setCommand(command)
-                    if (stdinText != null) {
-                        channel.setInputStream(ByteArrayInputStream(stdinText.encodeToByteArray()))
-                    }
-                    val inStream = channel.inputStream
-                    val errStream = channel.errStream
-                    channel.connect(5_000)
-                    val buffer = ByteArray(2048)
-                    while (true) {
-                        while (inStream.available() > 0) {
-                            val read = inStream.read(buffer)
-                            if (read <= 0) break
-                            val chunk = stdoutDecoder.decode(buffer, read)
-                            if (stdoutBuilder.length < MAX_STREAMED_OUTPUT_CHARS) stdoutBuilder.append(chunk)
-                            onChunk(chunk)
-                        }
-                        while (errStream.available() > 0) {
-                            val read = errStream.read(buffer)
-                            if (read <= 0) break
-                            val chunk = stderrDecoder.decode(buffer, read)
-                            if (stderrBuilder.length < MAX_STREAMED_OUTPUT_CHARS) stderrBuilder.append(chunk)
-                            onChunk(chunk)
-                        }
-                        if (channel.isClosed) {
-                            if (inStream.available() > 0 || errStream.available() > 0) continue
-                            exitCode = channel.exitStatus
-                            break
-                        }
-                        delay(STREAM_POLL_INTERVAL_MS)
-                    }
-                    for (decoder in listOf(stdoutDecoder, stderrDecoder)) {
-                        val tail = decoder.flush()
-                        if (tail.isNotEmpty()) onChunk(tail)
-                    }
-                    channel.disconnect()
+            // timeoutMs == null means untimed (e.g. `logs -f` follow): only cancellation
+            // ends the stream, and cancellation still disconnects via the finally below.
+            if (timeoutMs == null) {
+                readUntilClosed()
+            } else {
+                withTimeout(timeoutMs) {
+                    readUntilClosed()
                 }
             }
         } finally {

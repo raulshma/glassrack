@@ -2,6 +2,7 @@ package com.raulshma.grack.feature.containers
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,16 +23,21 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.RssFeed
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.WrapText
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
@@ -46,6 +52,9 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
+import androidx.compose.material3.ToggleButtonShapes
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,6 +62,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,12 +87,17 @@ import com.raulshma.grack.core.designsystem.expressiveHorizontalGroupShape
 import com.raulshma.grack.core.designsystem.monoNumericStyle
 import com.raulshma.grack.core.model.ComposeStack
 import com.raulshma.grack.core.model.ContainerAction
+import com.raulshma.grack.core.model.ContainerImageInfo
 import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerState
 import com.raulshma.grack.core.model.Formatters
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.StorageUnit
 import com.raulshma.grack.core.ssh.binaryName
+import io.github.vinceglb.filekit.dialogs.FileKitDialogSettings
+import io.github.vinceglb.filekit.dialogs.compose.rememberFileSaverLauncher
+import io.github.vinceglb.filekit.writeString
+import kotlinx.coroutines.launch
 import org.koin.compose.viewmodel.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -331,9 +346,38 @@ fun ContainersPane(
                                 onLogs = { viewModel.openLogs(server, container) },
                                 onInspect = { viewModel.openInspect(container) },
                                 onExecShell = {
-                                    onOpenExecShell(server.id, "docker exec -it ${container.name} sh\n")
+                                    onOpenExecShell(server.id, execShellCommand(container))
                                 },
                             )
+                        }
+                    }
+
+                    if (state.images.isNotEmpty()) {
+                        val sortedImages = state.images
+                            .sortedWith(compareByDescending<ContainerImageInfo> { !it.dangling }.thenBy { it.repoTag })
+                        item(key = "images-header") {
+                            ExpressiveSectionHeader(
+                                title = "Images",
+                                count = sortedImages.size,
+                                actionLabel = if (!prefs.safeReadOnlyMode && sortedImages.any { it.dangling }) "Prune Dangling" else null,
+                                onAction = if (!prefs.safeReadOnlyMode && sortedImages.any { it.dangling }) {
+                                    { viewModel.requestDanglingImagePrune(server) }
+                                } else null,
+                            )
+                        }
+                        item(key = "images-card") {
+                            ExpressiveGroupedCard {
+                                sortedImages.forEachIndexed { index, image ->
+                                    ImageGroupedItem(
+                                        index = index,
+                                        count = sortedImages.size,
+                                        image = image,
+                                        safeMode = prefs.safeReadOnlyMode,
+                                        storageUnit = prefs.storageUnit,
+                                        onRemove = { viewModel.requestImageRemove(server, image) },
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -391,8 +435,55 @@ fun ContainersPane(
         )
     }
 
+    state.pendingConfirmImageRemove?.let { image ->
+        ActionSafetyDialog(
+            title = "Remove image ${image.repoTag}?",
+            description = "Deletes '${image.repoTag}' (${image.id.take(12)}) from ${server.name}. " +
+                "Containers still using this image must be removed first; deleted image layers cannot be recovered.",
+            confirmationLevel = prefs.destructiveConfirmation,
+            onConfirm = { viewModel.confirmImageRemove(server) },
+            onDismiss = viewModel::dismissImageRemove,
+        )
+    }
+
+    if (state.pendingConfirmDanglingPrune) {
+        ActionSafetyDialog(
+            title = "Prune dangling images?",
+            description = "Removes all untagged (<none>) images on ${server.name}. " +
+                "Dangling layers left behind by rebuilds cannot be recovered.",
+            confirmationLevel = prefs.destructiveConfirmation,
+            onConfirm = { viewModel.confirmDanglingImagePrune(server) },
+            onDismiss = viewModel::dismissDanglingImagePrune,
+        )
+    }
+
     state.logsContainer?.let { target ->
         var logSearch by remember { mutableStateOf("") }
+        val scrollState = rememberScrollState()
+        val horizontalScrollState = rememberScrollState()
+        val scope = rememberCoroutineScope()
+        var autoScroll by remember { mutableStateOf(true) }
+        val isFollowing = state.isFollowingLogs
+
+        val logSaverLauncher = rememberFileSaverLauncher(
+            dialogSettings = FileKitDialogSettings.createDefault(),
+        ) { file ->
+            if (file != null) {
+                scope.launch {
+                    file.writeString(state.logsText)
+                    viewModel.setFeedback("Downloaded logs for ${target.name}")
+                }
+            }
+        }
+
+        // Pause auto-scroll the moment the user drags the log view manually; the stream
+        // keeps running and the Follow pill resumes following the tail.
+        LaunchedEffect(scrollState) {
+            scrollState.interactionSource.interactions.collect { interaction ->
+                if (interaction is DragInteraction.Start) autoScroll = false
+            }
+        }
+
         ModalBottomSheet(onDismissRequest = viewModel::closeLogs) {
             Column(
                 modifier = Modifier
@@ -402,7 +493,7 @@ fun ContainersPane(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -421,6 +512,68 @@ fun ContainersPane(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+
+                    Surface(
+                        onClick = {
+                            when {
+                                // Manual scroll paused the tail chase; Follow resumes it.
+                                isFollowing && !autoScroll -> autoScroll = true
+                                isFollowing -> viewModel.toggleFollowLogs(server, target)
+                                else -> {
+                                    autoScroll = true
+                                    viewModel.toggleFollowLogs(server, target)
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(999.dp),
+                        color = when {
+                            isFollowing && !autoScroll -> MaterialTheme.colorScheme.tertiaryContainer
+                            isFollowing -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        contentColor = when {
+                            isFollowing && !autoScroll -> MaterialTheme.colorScheme.onTertiaryContainer
+                            isFollowing -> MaterialTheme.colorScheme.onPrimary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.RssFeed,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = when {
+                                    isFollowing && !autoScroll -> "Follow (paused)"
+                                    isFollowing -> "Following"
+                                    else -> "Follow"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = {
+                            logSaverLauncher.launch(
+                                suggestedName = "grack-logs-${target.name.replace(Regex("[^A-Za-z0-9._-]"), "_")}",
+                                extension = "txt",
+                            )
+                        },
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        ),
+                    ) {
+                        Icon(Icons.Rounded.Download, contentDescription = "Download logs")
+                    }
+
                     FilledTonalIconButton(
                         onClick = { viewModel.openLogs(server, target) },
                         colors = IconButtonDefaults.filledTonalIconButtonColors(
@@ -431,15 +584,40 @@ fun ContainersPane(
                     }
                 }
 
-                ExpressiveSearchField(
-                    query = logSearch,
-                    onQueryChange = { logSearch = it },
-                    placeholder = "Filter log lines...",
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ExpressiveSearchField(
+                        query = logSearch,
+                        onQueryChange = { logSearch = it },
+                        placeholder = "Filter log lines...",
+                        modifier = Modifier.weight(1f),
+                    )
+                    LogTogglePill(
+                        label = "Regex",
+                        icon = Icons.Rounded.Code,
+                        checked = state.logsRegexEnabled,
+                        onToggle = { viewModel.setLogsRegexEnabled(!state.logsRegexEnabled) },
+                    )
+                    LogTogglePill(
+                        label = "Wrap",
+                        icon = Icons.Rounded.WrapText,
+                        checked = state.logsWrapLines,
+                        onToggle = { viewModel.setLogsWrapLines(!state.logsWrapLines) },
+                    )
+                }
 
-                val shownLines = remember(state.logsText, logSearch) {
-                    if (logSearch.isBlank()) state.logsText
-                    else state.logsText.lines().filter { it.contains(logSearch, ignoreCase = true) }.joinToString("\n")
+                val shownLines = remember(state.logsText, logSearch, state.logsRegexEnabled) {
+                    filterLogLines(state.logsText, logSearch, state.logsRegexEnabled)
+                }
+
+                // Chase the tail while following and auto-scroll is active.
+                LaunchedEffect(shownLines, isFollowing, autoScroll) {
+                    if (isFollowing && autoScroll) {
+                        scrollState.animateScrollTo(scrollState.maxValue)
+                    }
                 }
 
                 Surface(
@@ -449,12 +627,18 @@ fun ContainersPane(
                         .fillMaxWidth()
                         .height(340.dp),
                 ) {
+                    val textModifier = if (state.logsWrapLines) {
+                        Modifier
+                    } else {
+                        Modifier.horizontalScroll(horizontalScrollState)
+                    }
                     Text(
-                        text = shownLines,
+                        text = shownLines.ifBlank { "(no log output)" },
                         style = MaterialTheme.typography.bodySmall.merge(design.monoNumericStyle),
-                        modifier = Modifier
+                        softWrap = state.logsWrapLines,
+                        modifier = textModifier
                             .padding(14.dp)
-                            .verticalScroll(rememberScrollState()),
+                            .verticalScroll(scrollState),
                     )
                 }
                 Spacer(Modifier.height(12.dp))
@@ -519,6 +703,7 @@ private fun ComposeStackHeader(
     val stackVerbs = listOf(
         "Up" to "up -d",
         "Pull" to "pull",
+        "Update" to "update",
         "Down" to "down",
     )
     ExpressiveCard(
@@ -605,6 +790,151 @@ private data class ContainerPillAction(
 /** Exec command follows the container's own runtime instead of a hardcoded docker. */
 private fun execShellCommand(container: ContainerInfo): String =
     "${container.runtime.binaryName} exec -it ${container.name} sh\n"
+
+/** Filters log lines for the logs sheet: plain substring, or a (case-insensitive) regex when enabled. */
+internal fun filterLogLines(logsText: String, query: String, regexEnabled: Boolean): String {
+    if (query.isBlank()) return logsText
+    val regex = if (regexEnabled) {
+        runCatching { Regex(query, RegexOption.IGNORE_CASE) }.getOrNull()
+    } else {
+        null
+    }
+    return logsText.lines().filter { line ->
+        when (regex) {
+            null -> line.contains(query, ignoreCase = true)
+            else -> regex.containsMatchIn(line)
+        }
+    }.joinToString("\n")
+}
+
+/**
+ * Small expressive toggle pill used beside the logs filter for the Regex and Wrap switches.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun LogTogglePill(
+    label: String,
+    icon: ImageVector,
+    checked: Boolean,
+    onToggle: () -> Unit,
+) {
+    ToggleButton(
+        checked = checked,
+        onCheckedChange = { onToggle() },
+        shapes = ToggleButtonShapes(
+            shape = RoundedCornerShape(999.dp),
+            pressedShape = RoundedCornerShape(14.dp),
+            checkedShape = RoundedCornerShape(999.dp),
+        ),
+        colors = ToggleButtonDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            checkedContainerColor = MaterialTheme.colorScheme.primary,
+            checkedContentColor = MaterialTheme.colorScheme.onPrimary,
+        ),
+        contentPadding = PaddingValues(horizontal = 10.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+    }
+}
+
+/** One image row in the Images section; dangling images carry the destructive Remove pill. */
+@Composable
+private fun ImageGroupedItem(
+    index: Int,
+    count: Int,
+    image: ContainerImageInfo,
+    safeMode: Boolean,
+    storageUnit: StorageUnit,
+    onRemove: () -> Unit,
+) {
+    val design = LocalGlassrackDesign.current
+    ExpressiveGroupedItem(
+        index = index,
+        count = count,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            ExpressiveShapeBadge(
+                shape = ExpressiveBadgeShape.Diamond,
+                containerColor = if (image.dangling) {
+                    design.statusWarnContainer
+                } else {
+                    MaterialTheme.colorScheme.secondaryContainer
+                },
+                contentColor = if (image.dangling) {
+                    design.onStatusWarnContainer
+                } else {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                },
+                size = 40.dp,
+                icon = Icons.Rounded.Layers,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = image.repoTag,
+                    style = MaterialTheme.typography.titleSmall.merge(design.monoNumericStyle),
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val meta = buildList {
+                    add(Formatters.formatBytes(image.sizeBytes, storageUnit))
+                    if (image.createdSince.isNotBlank()) add(image.createdSince)
+                    if (image.digest.isNotBlank() && image.digest != "<none>") add(image.digest.take(19))
+                }
+                Text(
+                    text = meta.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (image.dangling && !safeMode) {
+                Surface(
+                    onClick = onRemove,
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            text = "Remove",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable

@@ -8,6 +8,7 @@ import com.raulshma.grack.core.model.AppAlert
 import com.raulshma.grack.core.model.AuditCategory
 import com.raulshma.grack.core.model.AuditOutcome
 import com.raulshma.grack.core.model.ContainerAction
+import com.raulshma.grack.core.model.ContainerImageInfo
 import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerRuntime
 import com.raulshma.grack.core.model.CronEntry
@@ -315,6 +316,17 @@ class HomelabController(
         latestServers.firstOrNull { it.id == challenge.serverId }?.let { pollServerOnce(it) }
     }
 
+    /**
+     * Runs [command] with honest job/audit bookkeeping (SUCCESS / FAILED / TIMEOUT / CANCELLED).
+     *
+     * [timeoutMs] is nullable: `null` means untimed and only makes sense with
+     * [streaming] — long-lived streams such as `logs -f` end when the caller cancels,
+     * which still records a CANCELLED audit and closes the job — never left RUNNING.
+     * Non-streaming calls with a null timeout fall back to [DEFAULT_ACTION_TIMEOUT_MS].
+     *
+     * [onStreamChunk], when set (streaming only), receives every streamed chunk in addition
+     * to the job's live output — the follow-logs UI renders from it.
+     */
     suspend fun executeAuditedAction(
         server: Server,
         category: AuditCategory,
@@ -322,8 +334,9 @@ class HomelabController(
         command: String,
         triggerSource: TriggerSource = TriggerSource.UI,
         streaming: Boolean = false,
-        timeoutMs: Long = DEFAULT_ACTION_TIMEOUT_MS,
+        timeoutMs: Long? = DEFAULT_ACTION_TIMEOUT_MS,
         stdinText: String? = null,
+        onStreamChunk: (suspend (String) -> Unit)? = null,
     ): SshExecResult {
         val started = currentTimeEpochMs()
         val jobId = repository.startJob(server.id, server.name, actionTitle, command, started)
@@ -331,9 +344,10 @@ class HomelabController(
             val result = if (streaming) {
                 sshClient.executeStreaming(server, latestServers, command, timeoutMs, stdinText) { chunk ->
                     repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
+                    onStreamChunk?.invoke(chunk)
                 }
             } else {
-                sshClient.execute(server, latestServers, command, timeoutMs, stdinText)
+                sshClient.execute(server, latestServers, command, timeoutMs ?: DEFAULT_ACTION_TIMEOUT_MS, stdinText)
             }
             val outcome = if (result.exitCode == 0) AuditOutcome.SUCCESS else AuditOutcome.FAILED
             repository.finishJob(
@@ -615,28 +629,59 @@ class HomelabController(
         return result
     }
 
+    /**
+     * The single compose-stack execution path: one place that picks the runtime's compose
+     * binary, honours the stack's working directory and `config_files` label, times updates
+     * generously and records the audit entry. Every caller (UI verbs, Phase 3B stack Update,
+     * Phase 4 AUTO updates) goes through this.
+     *
+     * [verb] is a plain compose verb (`ps`, `down`, `pull`, ...) or the pseudo-verb
+     * `update`, which expands to `pull && compose up -d` (recreate updated services).
+     * [configFiles], when set, comes from the stack's `config_files` compose label and is
+     * expanded into `-f <file>` arguments on both halves of the update chain.
+     * [timeoutMs] overrides the per-verb default (15 min for pull/up/update, 2 min otherwise).
+     */
     suspend fun performComposeStackAction(
         server: Server,
         projectName: String,
         workingDir: String?,
         verb: String,
+        triggerSource: TriggerSource = TriggerSource.UI,
+        timeoutMs: Long? = null,
+        configFiles: String? = null,
     ): SshExecResult {
         // Compose binary follows the node's detected runtime instead of a hardcoded docker.
         val composeBin = containerRuntimeFor(server).binaryName
-        val cmd = if (!workingDir.isNullOrBlank()) {
-            "cd '$workingDir' && $composeBin compose $verb"
-        } else {
-            "$composeBin compose -p '$projectName' $verb"
+        val fileArgs = configFiles
+            ?.split(',')
+            .orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString(" ") { "-f ${shellQuote(it)}" }
+        val cdPrefix = if (!workingDir.isNullOrBlank()) "cd '$workingDir' && " else ""
+        val composeBase = buildString {
+            append(composeBin)
+            append(" compose")
+            if (workingDir.isNullOrBlank()) append(" -p '").append(projectName).append("'")
+            if (fileArgs.isNotEmpty()) append(" ").append(fileArgs)
         }
-        val isStackUpdate = verb.trim().startsWith("pull") || verb.trim().startsWith("up")
+        val isUpdateVerb = verb.trim().equals("update", ignoreCase = true)
+        val cmd = if (isUpdateVerb) {
+            "$cdPrefix${composeBase} pull && ${composeBase} up -d"
+        } else {
+            "$cdPrefix${composeBase} $verb"
+        }
+        val isStackUpdate = isUpdateVerb ||
+            verb.trim().startsWith("pull") ||
+            verb.trim().startsWith("up")
         val result = executeAuditedAction(
             server = server,
             category = AuditCategory.CONTAINER,
             actionTitle = "Compose $verb: $projectName",
             command = cmd,
-            triggerSource = TriggerSource.UI,
+            triggerSource = triggerSource,
             streaming = true,
-            timeoutMs = if (isStackUpdate) COMPOSE_UPDATE_TIMEOUT_MS else COMPOSE_ACTION_TIMEOUT_MS,
+            timeoutMs = timeoutMs ?: if (isStackUpdate) COMPOSE_UPDATE_TIMEOUT_MS else COMPOSE_ACTION_TIMEOUT_MS,
         )
         pollServerOnce(server)
         return result
@@ -647,6 +692,68 @@ class HomelabController(
         val cmd = "${container.runtime.binaryName} logs --tail $tail '${container.name}' 2>&1"
         val res = sshClient.execute(server, latestServers, cmd, 15_000L)
         return res.stdout.ifBlank { res.stderr }
+    }
+
+    /**
+     * Follows a container's live logs on `<runtime> logs -f --tail $tail --timestamps`,
+     * streaming every chunk to [onChunk]. The stream is untimed (a follow only ends when
+     * the caller cancels) but routed through [executeAuditedAction], so cancelling it
+     * records a CANCELLED audit and closes its job — no RUNNING job and no leaked channel.
+     */
+    suspend fun followContainerLogs(
+        server: Server,
+        container: ContainerInfo,
+        tail: Int = FOLLOW_LOGS_TAIL,
+        onChunk: suspend (String) -> Unit,
+    ): SshExecResult {
+        val cmd = "${container.runtime.binaryName} logs -f --tail $tail --timestamps '${container.name}' 2>&1"
+        return executeAuditedAction(
+            server = server,
+            category = AuditCategory.CONTAINER,
+            actionTitle = "Follow logs: ${container.name}",
+            command = cmd,
+            streaming = true,
+            timeoutMs = null, // untimed: `logs -f` runs until the caller cancels it
+            onStreamChunk = onChunk,
+        )
+    }
+
+    /** Lists the node's images via the runtime detected for [server] (docker unless podman-only). */
+    suspend fun fetchImages(server: Server): List<ContainerImageInfo> {
+        val usePodman = !server.capabilities.hasDocker && server.capabilities.hasPodman
+        val res = sshClient.execute(server, latestServers, TelemetryProbes.dockerImagesScript(usePodman), 15_000L)
+        return TelemetryParsers.parseImages(res.stdout)
+    }
+
+    /** Removes a single image (`<runtime> rmi <id>`); destructive and audited. */
+    suspend fun performImageRemove(
+        server: Server,
+        image: ContainerImageInfo,
+        triggerSource: TriggerSource = TriggerSource.UI,
+    ): SshExecResult {
+        val bin = containerRuntimeFor(server).binaryName
+        return executeAuditedAction(
+            server = server,
+            category = AuditCategory.CONTAINER,
+            actionTitle = "Remove image: ${image.repoTag}",
+            command = "$bin rmi ${shellQuote(image.id)}",
+            triggerSource = triggerSource,
+        )
+    }
+
+    /** Prunes dangling (untagged) images; destructive and audited. */
+    suspend fun performDanglingImagePrune(
+        server: Server,
+        triggerSource: TriggerSource = TriggerSource.UI,
+    ): SshExecResult {
+        val bin = containerRuntimeFor(server).binaryName
+        return executeAuditedAction(
+            server = server,
+            category = AuditCategory.CONTAINER,
+            actionTitle = "Prune dangling images",
+            command = "$bin image prune -f",
+            triggerSource = triggerSource,
+        )
     }
 
     suspend fun fetchSystemdAndCron(server: Server): Pair<List<SystemdUnit>, List<CronEntry>> {
@@ -981,6 +1088,9 @@ class HomelabController(
 
         /** Compose pull/up download images; give them 15 minutes. */
         const val COMPOSE_UPDATE_TIMEOUT_MS: Long = 15 * 60_000L
+
+        /** Tail length of the `logs -f` follow stream. */
+        const val FOLLOW_LOGS_TAIL: Int = 200
 
         /** How often idle pooled sessions are pruned. */
         const val IDLE_PRUNE_INTERVAL_MS: Long = 15 * 60_000L

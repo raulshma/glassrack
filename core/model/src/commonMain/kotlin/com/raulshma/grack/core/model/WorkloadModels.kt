@@ -37,6 +37,8 @@ data class ContainerInfo(
     val composeProject: String? = null,
     val composeService: String? = null,
     val composeWorkingDir: String? = null,
+    /** Raw `com.docker.compose.project.config_files` label (comma-separated), null when unset. */
+    val composeConfigFiles: String? = null,
     val portsSummary: String = "",
     val cpuPct: Float = 0f,
     val memUsedBytes: Long = 0L,
@@ -52,10 +54,29 @@ data class ComposeStack(
     val projectName: String,
     val workingDir: String?,
     val containers: ImmutableList<ContainerInfo> = persistentListOf(),
+    /** Compose config files from the stack's `config_files` label; drives `compose -f` invocations. */
+    val configFiles: String? = null,
 ) {
     val runningCount: Int get() = containers.count { it.state == ContainerState.RUNNING }
     val totalCount: Int get() = containers.size
 }
+
+/**
+ * One container image as listed by `<runtime> images`. [dangling] marks untagged
+ * (`<none>:<none>`) images that "remove unused" and "prune dangling" target.
+ */
+@Immutable
+@Serializable
+data class ContainerImageInfo(
+    val id: String,
+    val repository: String,
+    val tag: String,
+    val repoTag: String,
+    val digest: String = "",
+    val sizeBytes: Long = 0L,
+    val createdSince: String = "",
+    val dangling: Boolean = false,
+)
 
 @Serializable
 enum class ContainerAction(val label: String, val isDestructive: Boolean) {

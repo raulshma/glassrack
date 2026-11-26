@@ -73,9 +73,22 @@ object TelemetryProbes {
         val bin = if (usePodman) "podman" else "docker"
         return """
             echo "===PS==="
-            $bin ps -a --no-trunc --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.State}}|{{.Status}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Ports}}' 2>/dev/null || true
+            $bin ps -a --no-trunc --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.State}}|{{.Status}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Label "com.docker.compose.project.config_files"}}|{{.Ports}}' 2>/dev/null || true
             echo "===STATS==="
             $bin stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null || true
+        """.trimIndent()
+    }
+
+    /**
+     * Machine-readable image listing for either runtime; both docker and podman support the
+     * same Go-template fields here. Rows are `id|repository|tag|digest|size|createdSince`
+     * with `<none>` for untagged/untagged-repository (dangling) images.
+     */
+    fun dockerImagesScript(usePodman: Boolean = false): String {
+        val bin = if (usePodman) "podman" else "docker"
+        return """
+            echo "===IMAGES==="
+            $bin images --format '{{.ID}}|{{.Repository}}|{{.Tag}}|{{.Digest}}|{{.Size}}|{{.CreatedSince}}' 2>/dev/null || true
         """.trimIndent()
     }
 

@@ -31,6 +31,7 @@ kotlin {
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
             implementation(libs.koin.compose.viewmodel)
+            implementation(libs.filekit.dialogs.compose)
             implementation(libs.kermit)
         }
     }

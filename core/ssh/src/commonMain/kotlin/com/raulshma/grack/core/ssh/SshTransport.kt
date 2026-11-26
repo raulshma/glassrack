@@ -49,11 +49,19 @@ interface SshSessionClient {
         stdinText: String? = null,
     ): SshExecResult
 
+    /**
+     * Runs [command] streaming stdout/stderr chunks to [onChunk] as they arrive.
+     *
+     * [timeoutMs] is nullable: `null` means untimed, for long-lived streams such as
+     * `logs -f` that only end when the caller cancels. Cancellation (of the calling
+     * coroutine, or of a non-null timeout) always disconnects the channel in `finally`,
+     * so a cancelled stream leaves no leaked channel behind.
+     */
     suspend fun executeStreaming(
         server: Server,
         allServers: List<Server>,
         command: String,
-        timeoutMs: Long = 60_000L,
+        timeoutMs: Long? = 60_000L,
         stdinText: String? = null,
         onChunk: suspend (String) -> Unit,
     ): SshExecResult

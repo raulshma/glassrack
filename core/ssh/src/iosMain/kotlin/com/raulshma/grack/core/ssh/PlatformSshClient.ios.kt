@@ -30,10 +30,10 @@ actual class PlatformSshClient actual constructor(
         server: Server,
         allServers: List<Server>,
         command: String,
-        timeoutMs: Long,
+        timeoutMs: Long?,
         stdinText: String?,
         onChunk: suspend (String) -> Unit,
-    ): SshExecResult = execute(server, allServers, command, timeoutMs, stdinText)
+    ): SshExecResult = execute(server, allServers, command, timeoutMs ?: 60_000L, stdinText)
 
     override suspend fun openShell(server: Server, allServers: List<Server>, cols: Int, rows: Int): SshShellSession =
         throw UnsupportedOperationException("Live SSH is not yet supported on iOS; use Android for live SSH transport.")

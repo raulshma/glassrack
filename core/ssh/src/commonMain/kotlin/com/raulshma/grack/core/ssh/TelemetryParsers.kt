@@ -1,6 +1,7 @@
 package com.raulshma.grack.core.ssh
 
 import com.raulshma.grack.core.model.ComposeStack
+import com.raulshma.grack.core.model.ContainerImageInfo
 import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerRuntime
 import com.raulshma.grack.core.model.ContainerState
@@ -341,7 +342,8 @@ object TelemetryParsers {
                 composeProject = cols.getOrNull(5)?.trim()?.takeIf { it.isNotEmpty() },
                 composeService = cols.getOrNull(6)?.trim()?.takeIf { it.isNotEmpty() },
                 composeWorkingDir = cols.getOrNull(7)?.trim()?.takeIf { it.isNotEmpty() },
-                portsSummary = cols.getOrNull(8)?.trim().orEmpty(),
+                composeConfigFiles = cols.getOrNull(8)?.trim()?.takeIf { it.isNotEmpty() },
+                portsSummary = cols.getOrNull(9)?.trim().orEmpty(),
                 cpuPct = stat?.first ?: 0f,
                 memUsedBytes = stat?.second?.first ?: 0L,
                 memLimitBytes = stat?.second?.second ?: 0L,
@@ -357,11 +359,38 @@ object TelemetryParsers {
                     projectName = project,
                     workingDir = list.firstNotNullOfOrNull { it.composeWorkingDir },
                     containers = list.sortedBy { it.name }.toImmutableList(),
+                    configFiles = list.firstNotNullOfOrNull { it.composeConfigFiles },
                 )
             }
             .sortedBy { it.projectName }
         val standalone = containers.filter { it.composeProject.isNullOrBlank() }.sortedBy { it.name }
         return grouped to standalone
+    }
+
+    /**
+     * Parses `dockerImagesScript` output rows (`id|repository|tag|digest|size|createdSince`).
+     * Images whose repository is `<none>` are dangling (untagged leftovers of rebuilds).
+     */
+    fun parseImages(output: String): List<ContainerImageInfo> {
+        val sec = splitSections(output)
+        return sec["IMAGES"].orEmpty().lineSequence().mapNotNull { line ->
+            val cols = line.split('|')
+            if (cols.size < 6) return@mapNotNull null
+            val id = cols[0].trim()
+            val repository = cols[1].trim()
+            val tag = cols[2].trim()
+            if (id.isEmpty()) return@mapNotNull null
+            ContainerImageInfo(
+                id = id,
+                repository = repository,
+                tag = tag,
+                repoTag = "$repository:$tag",
+                digest = cols[3].trim(),
+                sizeBytes = parseHumanBytes(cols[4]),
+                createdSince = cols.getOrNull(5)?.trim().orEmpty(),
+                dangling = repository == DANGLING_IMAGE_PLACEHOLDER,
+            )
+        }.toList()
     }
 
     fun parseSystemdAndCron(output: String): Pair<List<SystemdUnit>, List<CronEntry>> {
@@ -479,4 +508,7 @@ object TelemetryParsers {
         }
         return (num * mult).toLong()
     }
+
+    /** Both runtimes print `<none>` for the repository (and tag) of dangling images. */
+    internal const val DANGLING_IMAGE_PLACEHOLDER = "<none>"
 }
