@@ -42,7 +42,7 @@ android {
 
     val resolvedVersionName = (providers.gradleProperty("versionName").orNull
         ?: System.getenv("GLASSRACK_VERSION_NAME")
-        ?: "0.0.3").removePrefix("v")
+        ?: "0.0.1").removePrefix("v")
     val resolvedVersionCode = (providers.gradleProperty("versionCode").orNull
         ?: System.getenv("GLASSRACK_VERSION_CODE"))
         ?.toIntOrNull()
