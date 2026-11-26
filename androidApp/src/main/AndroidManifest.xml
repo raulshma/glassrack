@@ -36,7 +36,7 @@
         <service
             android:name=".service.GlassrackQuickTileService"
             android:exported="true"
-            android:icon="@android:drawable/stat_sys_data_bluetooth"
+            android:icon="@drawable/ic_tile_terminal"
             android:label="GRack WoL"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>

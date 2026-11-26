@@ -14,10 +14,12 @@ import com.raulshma.grack.core.model.SshKeyAlgorithm
 import com.raulshma.grack.core.model.SshKeyRecord
 import com.raulshma.grack.core.model.StorageUnit
 import com.raulshma.grack.core.model.TemperatureUnit
+import com.raulshma.grack.core.model.TerminalCursorShape
 import com.raulshma.grack.core.model.TerminalThemePreset
 import com.raulshma.grack.core.model.ThemeVariant
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.currentTimeEpochMs
+import com.raulshma.grack.core.model.snippetTargetServers
 import com.raulshma.grack.core.security.NotificationGate
 import com.raulshma.grack.core.security.SshKeyGenerator
 import com.raulshma.grack.core.ssh.HomelabController
@@ -144,9 +146,7 @@ class SettingsViewModel(
             return
         }
         viewModelScope.launch {
-            val targets = uiState.value.servers.filter { srv ->
-                snippet.targetTags.isEmpty() || srv.tags.any { it in snippet.targetTags }
-            }
+            val targets = snippetTargetServers(uiState.value.servers, snippet.targetTags)
             targets.forEach { srv ->
                 launch {
                     controller.executeAuditedAction(
@@ -213,5 +213,31 @@ class SettingsViewModel(
     fun setStorageUnit(u: StorageUnit) = updatePreferences { it.copy(storageUnit = u) }
     fun setTerminalPreset(p: TerminalThemePreset) = updatePreferences {
         it.copy(terminalAppearance = it.terminalAppearance.copy(themePreset = p))
+    }
+
+    /** Default poll interval applied to newly onboarded nodes. */
+    fun setGlobalPollInterval(sec: Int) = updatePreferences {
+        it.copy(globalPollIntervalSec = sec.coerceIn(MIN_POLL_INTERVAL_SEC, MAX_POLL_INTERVAL_SEC))
+    }
+
+    /** Audit entries older than this are pruned automatically (and via the Audit screen). */
+    fun setAuditRetentionDays(days: Int) = updatePreferences {
+        it.copy(auditRetentionDays = days.coerceAtLeast(1))
+    }
+
+    /** termlib 0.3.15 caps its scrollback buffer at 1000 lines; clamp here. */
+    fun setTerminalScrollback(lines: Int) = updatePreferences {
+        it.copy(terminalAppearance = it.terminalAppearance.copy(scrollbackLines = lines.coerceIn(MIN_SCROLLBACK_LINES, MAX_SCROLLBACK_LINES)))
+    }
+
+    fun setTerminalCursor(shape: TerminalCursorShape) = updatePreferences {
+        it.copy(terminalAppearance = it.terminalAppearance.copy(cursorShape = shape))
+    }
+
+    companion object {
+        const val MIN_POLL_INTERVAL_SEC: Int = 2
+        const val MAX_POLL_INTERVAL_SEC: Int = 300
+        const val MIN_SCROLLBACK_LINES: Int = 200
+        const val MAX_SCROLLBACK_LINES: Int = 1000
     }
 }

@@ -7,6 +7,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.raulshma.grack.GlassrackApplication
 import com.raulshma.grack.MainActivity
+import com.raulshma.grack.R
 
 class SshForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
@@ -35,7 +36,7 @@ class SshForegroundService : Service() {
         )
 
         val notification = NotificationCompat.Builder(this, GlassrackApplication.CHANNEL_SSH_SERVICE)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(R.drawable.ic_tile_terminal)
             .setContentTitle("GRack SSH Active")
             .setContentText("$sessionCount active SSH session(s) — Tap to resume")
             .setOngoing(true)

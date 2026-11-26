@@ -226,6 +226,14 @@ class ServersViewModel(
     fun pollServer(server: Server) {
         viewModelScope.launch {
             controller.pollServerOnce(server)
+            // Surface the outcome on the detail screen (status banner), not just inside
+            // the edit sheet — pollServerOnce records failures on the runtime state.
+            val state = controller.runtimeStates.value[server.id]
+            _testMsg.value = if (state?.lastError != null) {
+                "Poll failed for ${server.name}: ${state.lastError}"
+            } else {
+                "Poll finished — ${server.name} is ${state?.health?.name ?: "UNKNOWN"}"
+            }
         }
     }
 

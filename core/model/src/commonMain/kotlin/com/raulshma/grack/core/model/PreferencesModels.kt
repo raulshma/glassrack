@@ -53,10 +53,10 @@ enum class TerminalThemePreset(
 }
 
 @Serializable
-enum class TerminalCursorShape {
-    BLOCK,
-    BAR,
-    UNDERLINE,
+enum class TerminalCursorShape(val oscShapeCode: Int) {
+    BLOCK(0),
+    BAR(1),
+    UNDERLINE(2),
 }
 
 @Immutable
@@ -65,7 +65,8 @@ data class TerminalAppearance(
     val themePreset: TerminalThemePreset = TerminalThemePreset.PRISMATIC,
     val fontSizeSp: Float = 13f,
     val cursorShape: TerminalCursorShape = TerminalCursorShape.BLOCK,
-    val scrollbackLines: Int = 2000,
+    /** Hard cap 1000: termlib 0.3.15 fixes its scrollback buffer at 1000 lines. */
+    val scrollbackLines: Int = 1000,
     val customExtraKeys: List<String> = listOf("ESC", "TAB", "CTRL", "ALT", "UP", "DOWN", "LEFT", "RIGHT", "|", "~", "/", "-", ":", "CTRL_C"),
 )
 

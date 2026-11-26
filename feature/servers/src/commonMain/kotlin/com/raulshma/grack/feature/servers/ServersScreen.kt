@@ -140,6 +140,8 @@ fun ServersScreen(
                 id = "srv-${Random.nextInt(10000, 99999)}",
                 name = "",
                 primaryHost = "",
+                // New nodes default to the global poll interval preference.
+                pollIntervalSec = state.preferences.globalPollIntervalSec,
             )
             onConsumedOpenAddSheet()
         }
@@ -168,6 +170,7 @@ fun ServersScreen(
                                 id = "srv-${Random.nextInt(10000, 99999)}",
                                 name = "",
                                 primaryHost = "",
+                                pollIntervalSec = state.preferences.globalPollIntervalSec,
                             )
                         },
                         modifier = Modifier.fillMaxSize(),
@@ -209,6 +212,7 @@ fun ServersScreen(
                                     id = "srv-${Random.nextInt(10000, 99999)}",
                                     name = "",
                                     primaryHost = "",
+                                    pollIntervalSec = state.preferences.globalPollIntervalSec,
                                 )
                             },
                         )
@@ -230,6 +234,7 @@ fun ServersScreen(
                             id = "srv-${Random.nextInt(10000, 99999)}",
                             name = "",
                             primaryHost = "",
+                            pollIntervalSec = state.preferences.globalPollIntervalSec,
                         )
                     },
                     modifier = Modifier.fillMaxSize(),
@@ -769,6 +774,48 @@ private fun ServerDetailPane(
                 }
             },
         )
+
+        // Hero feedback (Phase 1C item 4): Wake/Poll/Reboot results land in the shared
+        // status message; surface them here so they are not only visible in the edit sheet.
+        AnimatedVisibility(visible = allState.testStatusMessage != null) {
+            allState.testStatusMessage?.let { msg ->
+                val isFailed = msg.startsWith("Failed", ignoreCase = true) ||
+                    msg.startsWith("WoL error", ignoreCase = true) ||
+                    msg.startsWith("Poll failed", ignoreCase = true) ||
+                    msg.startsWith("Blocked", ignoreCase = true)
+                Surface(
+                    color = if (isFailed) {
+                        MaterialTheme.colorScheme.errorContainer
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer
+                    },
+                    contentColor = if (isFailed) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    },
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = viewModel::clearMessage) {
+                            Text("OK")
+                        }
+                    }
+                }
+            }
+        }
 
         Row(
             modifier = Modifier
@@ -1894,6 +1941,7 @@ private fun AddEditServerSheet(
 ) {
     var name by remember { mutableStateOf(initial.name) }
     var groupTag by remember { mutableStateOf(initial.groupTag) }
+    var tagsCsv by remember { mutableStateOf(initial.tags.joinToString(", ")) }
     var primaryHost by remember { mutableStateOf(initial.primaryHost) }
     var fallbackHost by remember { mutableStateOf(initial.fallbackHost) }
     var portText by remember { mutableStateOf(initial.port.toString()) }
@@ -1914,6 +1962,7 @@ private fun AddEditServerSheet(
     fun buildServer(): Server = initial.copy(
         name = name.trim().ifBlank { primaryHost.trim() },
         groupTag = groupTag.trim().ifBlank { "Homelab" },
+        tags = tagsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
         primaryHost = primaryHost.trim(),
         fallbackHost = fallbackHost.trim(),
         port = portText.toIntOrNull() ?: 22,
@@ -1922,7 +1971,8 @@ private fun AddEditServerSheet(
         sshKeyId = if (authType == AuthType.KEY) selectedKeyId else null,
         macAddress = macAddress.trim(),
         jumpHostServerId = jumpHostId,
-        pollIntervalSec = (pollInterval.toIntOrNull() ?: 5).coerceIn(2, 300),
+        // A cleared field keeps the node's current interval (or the global default for new nodes).
+        pollIntervalSec = (pollInterval.toIntOrNull() ?: initial.pollIntervalSec).coerceIn(2, 300),
         notes = notes.trim(),
     )
 
@@ -1991,6 +2041,20 @@ private fun AddEditServerSheet(
                         value = groupTag,
                         onValueChange = { groupTag = it },
                         label = { Text("Rack Group / Tag") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = tagsCsv,
+                        onValueChange = { tagsCsv = it },
+                        label = { Text("Tags for Snippet Broadcasts (comma-separated)") },
+                        placeholder = { Text("e.g. docker, nas, raspberrypi") },
+                        supportingText = {
+                            Text(
+                                text = "Broadcast runbooks target nodes with any of these tags",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )

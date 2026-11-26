@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Terminal prompt (">_") used by the SSH foreground-service notification and the WoL quick tile. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M6,7 L11,12 L6,17 L6,14.5 L8.5,12 L6,9.5 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,15 L19,15 L19,17 L12,17 Z" />
+</vector>

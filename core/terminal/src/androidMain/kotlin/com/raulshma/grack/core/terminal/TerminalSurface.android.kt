@@ -11,6 +11,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
 import com.raulshma.grack.core.model.TerminalAppearance
+import com.raulshma.grack.core.model.TerminalCursorShape
 import com.raulshma.grack.core.ssh.SshShellSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,7 @@ actual class TerminalController actual constructor(
                 emulator.writeInput(bytes, 0, bytes.size)
             }
         }
+        applyCursorShape(appearance.cursorShape)
     }
 
     actual fun sendExtraKey(key: ExtraKeyCode) {
@@ -113,6 +115,19 @@ actual class TerminalController actual constructor(
             appearance.themePreset.foregroundArgb.toInt(),
             appearance.themePreset.backgroundArgb.toInt(),
         )
+        applyCursorShape(appearance.cursorShape)
+    }
+
+    /**
+     * Enforces the user's cursor preference by injecting termlib's OSC 1337
+     * `SetCursorShape` control sequence into the emulator (host-side output only; the
+     * sequence never reaches the remote shell). termlib 0.3.15 exposes no setter API.
+     */
+    private fun applyCursorShape(shape: TerminalCursorShape) {
+        runCatching {
+            val sequence = "\u001B]1337;SetCursorShape=${shape.oscShapeCode}\u0007".encodeToByteArray()
+            emulator.writeInput(sequence, 0, sequence.size)
+        }
     }
 
     actual fun close() {

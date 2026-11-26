@@ -28,7 +28,9 @@ val glassrackCommonModule = module {
     single { PreferencesStore(createPreferencesDataStore(get())) }
     single { GlassrackRepository(get(), get(), get()) }
     single<SshSessionClient> { PlatformSshClient(get(), get()) }
-    single { HomelabController(get(), get()) }
+    // The Android app contributes a file-backed ContainerStateCache; on iOS (and in tests)
+    // no binding exists and the controller simply skips widget-cache writes.
+    single { HomelabController(get(), get(), containerStateCache = getOrNull()) }
 
     viewModel { OverviewViewModel(get(), get()) }
     viewModel { ServersViewModel(get(), get(), get(), get()) }

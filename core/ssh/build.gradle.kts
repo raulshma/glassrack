@@ -25,13 +25,11 @@ kotlin {
             implementation(projects.core.database)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
-            implementation(libs.ktor.client.core)
             implementation(libs.kermit)
         }
         androidMain.dependencies {
             implementation(libs.bcprov.jdk18on)
             implementation(libs.jsch)
-            implementation(libs.ktor.client.okhttp)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

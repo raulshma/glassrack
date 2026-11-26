@@ -55,6 +55,14 @@ class HomelabController(
     private val repository: GlassrackRepository,
     private val sshClient: SshSessionClient,
     backgroundDispatcher: CoroutineContext = Dispatchers.Default,
+    /**
+     * Pause gate for the continuous polling loops. The app closes it while backgrounded or
+     * (per preference) on metered networks; one-shot calls such as [pollServerOnce] from the
+     * WorkManager worker intentionally bypass it.
+     */
+    val pollingGate: PollingGate = PollingGate(),
+    /** Records successful container fetches so widgets never need SSH to render. */
+    private val containerStateCache: ContainerStateCache? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + backgroundDispatcher)
     private val sampleCache = TelemetrySampleCache()
@@ -133,6 +141,9 @@ class HomelabController(
             if (pollingJobs[server.id]?.isActive != true) {
                 pollingJobs[server.id] = scope.launch {
                     while (isActive) {
+                        // Polling hygiene: suspend while a pause reason (backgrounded,
+                        // metered) is active instead of polling every few seconds forever.
+                        pollingGate.awaitOpen()
                         val currentServer = latestServers.firstOrNull { it.id == server.id } ?: break
                         pollServerOnce(currentServer)
                         delay(currentServer.pollIntervalSec.coerceAtLeast(2) * 1000L)
@@ -425,7 +436,14 @@ class HomelabController(
         val usePodman = !server.capabilities.hasDocker && server.capabilities.hasPodman
         val runtime = if (usePodman) ContainerRuntime.PODMAN else ContainerRuntime.DOCKER
         val res = sshClient.execute(server, latestServers, TelemetryProbes.dockerContainersScript(usePodman), 15_000L)
-        return TelemetryParsers.parseContainers(res.stdout, runtime)
+        val containers = TelemetryParsers.parseContainers(res.stdout, runtime)
+        // Successful fetches refresh the widget cache; a failed run must not wipe the
+        // last-known state widgets render from.
+        if (res.exitCode == 0) {
+            runCatching { containerStateCache?.recordContainers(server.id, containers, currentTimeEpochMs()) }
+                .onFailure { Logger.w(it) { "Widget container cache update failed" } }
+        }
+        return containers
     }
 
     /** The container engine binary to drive for [server]: podman only when docker is absent. */

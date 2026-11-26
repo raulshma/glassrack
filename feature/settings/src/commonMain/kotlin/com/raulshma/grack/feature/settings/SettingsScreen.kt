@@ -32,15 +32,19 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Fingerprint
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.ManageHistory
+import androidx.compose.material.icons.rounded.Mouse
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TextFields
@@ -72,6 +76,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -89,12 +98,15 @@ import com.raulshma.grack.core.designsystem.monoNumericStyle
 import com.raulshma.grack.core.model.AlertMetric
 import com.raulshma.grack.core.model.ConfirmationLevel
 import com.raulshma.grack.core.model.DensityMode
+import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.SshKeyAlgorithm
 import com.raulshma.grack.core.model.SshKeyRecord
 import com.raulshma.grack.core.model.StorageUnit
 import com.raulshma.grack.core.model.TemperatureUnit
+import com.raulshma.grack.core.model.TerminalCursorShape
 import com.raulshma.grack.core.model.TerminalThemePreset
 import com.raulshma.grack.core.model.ThemeVariant
+import com.raulshma.grack.core.model.snippetTargetServers
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.vinceglb.filekit.dialogs.FileKitDialogSettings
 import io.github.vinceglb.filekit.dialogs.FileKitType
@@ -104,11 +116,26 @@ import io.github.vinceglb.filekit.readString
 import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.launch
 import org.koin.compose.viewmodel.koinViewModel
+import kotlin.math.roundToInt
 
 private enum class ThemeModeOption {
     SYSTEM,
     LIGHT,
     DARK,
+}
+
+/** Display/persist clamp for the scrollback preference; termlib caps at 1000 lines. */
+private fun clampedScrollback(lines: Int): Int =
+    lines.coerceIn(SettingsViewModel.MIN_SCROLLBACK_LINES, SettingsViewModel.MAX_SCROLLBACK_LINES)
+
+/** "N matching nodes" for a runbook row; untagged runbooks target the whole cluster. */
+private fun runbookTargetLabel(targetTags: List<String>, servers: List<Server>): String {
+    val count = snippetTargetServers(servers, targetTags).size
+    return if (targetTags.isEmpty()) {
+        "Broadcasts to all $count node(s)"
+    } else {
+        "Broadcasts to $count matching node(s)"
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -315,13 +342,21 @@ fun SettingsScreen(
                                     .size(44.dp)
                                     .clip(RoundedCornerShape(14.dp))
                                     .background(swatchColor)
-                                    .clickable { viewModel.setSeedColor(hex) },
+                                    .clickable { viewModel.setSeedColor(hex) }
+                                    // TalkBack previously saw nothing here: the swatch was an
+                                    // unlabelled image tile and its check icon read only when
+                                    // selected. Label the swatch itself with a selection state.
+                                    .semantics(mergeDescendants = true) {
+                                        role = Role.RadioButton
+                                        contentDescription = "$name seed accent"
+                                        stateDescription = if (isSelected) "Selected" else "Not selected"
+                                    },
                                 contentAlignment = Alignment.Center,
                             ) {
                                 if (isSelected) {
                                     Icon(
                                         imageVector = Icons.Rounded.Check,
-                                        contentDescription = name,
+                                        contentDescription = null,
                                         tint = checkTint,
                                         modifier = Modifier.size(20.dp),
                                     )
@@ -483,7 +518,7 @@ fun SettingsScreen(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 ExpressiveSectionHeader("Safety & Security")
                 ExpressiveGroupedCard(itemSpacing = 2.dp) {
-                    ExpressiveGroupedItem(index = 0, count = 3) {
+                    ExpressiveGroupedItem(index = 0, count = 4) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -515,7 +550,7 @@ fun SettingsScreen(
                         }
                     }
 
-                    ExpressiveGroupedItem(index = 1, count = 3) {
+                    ExpressiveGroupedItem(index = 1, count = 4) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -547,7 +582,7 @@ fun SettingsScreen(
                         }
                     }
 
-                    ExpressiveGroupedItem(index = 2, count = 3) {
+                    ExpressiveGroupedItem(index = 2, count = 4) {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -580,6 +615,43 @@ fun SettingsScreen(
                                     }
                                 },
                             )
+                        }
+                    }
+
+                    ExpressiveGroupedItem(index = 3, count = 4) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                ExpressiveIconTile(
+                                    icon = Icons.Rounded.ManageHistory,
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    contentColor = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Column {
+                                    Text("Audit Retention", style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        text = "Entries older than this are pruned automatically (the hash chain re-anchors)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                listOf(7, 30, 90, 180, 365).forEach { days ->
+                                    SettingsUnitPill(
+                                        label = "$days d",
+                                        selected = prefs.auditRetentionDays == days,
+                                        onClick = { viewModel.setAuditRetentionDays(days) },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -632,7 +704,7 @@ fun SettingsScreen(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 ExpressiveSectionHeader("Telemetry & Polling")
                 ExpressiveGroupedCard(itemSpacing = 2.dp) {
-                    ExpressiveGroupedItem(index = 0, count = 3) {
+                    ExpressiveGroupedItem(index = 0, count = 6) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -664,7 +736,58 @@ fun SettingsScreen(
                         }
                     }
 
-                    ExpressiveGroupedItem(index = 1, count = 3) {
+                    ExpressiveGroupedItem(index = 1, count = 6) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    ExpressiveIconTile(
+                                        icon = Icons.Rounded.Speed,
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    )
+                                    Text("Default Poll Interval", style = MaterialTheme.typography.bodyLarge)
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                ) {
+                                    Text(
+                                        text = "${prefs.globalPollIntervalSec}s",
+                                        style = MaterialTheme.typography.labelMedium.merge(design.monoNumericStyle),
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "Applied to newly added nodes; each node can override it",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                listOf(2, 5, 10, 30, 60, 120).forEach { sec ->
+                                    SettingsUnitPill(
+                                        label = "${sec}s",
+                                        selected = prefs.globalPollIntervalSec == sec,
+                                        onClick = { viewModel.setGlobalPollInterval(sec) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    ExpressiveGroupedItem(index = 2, count = 6) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -707,7 +830,7 @@ fun SettingsScreen(
                         }
                     }
 
-                    ExpressiveGroupedItem(index = 2, count = 3) {
+                    ExpressiveGroupedItem(index = 3, count = 6) {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -732,6 +855,80 @@ fun SettingsScreen(
                                     )
                                 }
                             }
+                        }
+                    }
+
+                    ExpressiveGroupedItem(index = 4, count = 6) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                ExpressiveIconTile(
+                                    icon = Icons.Rounded.Mouse,
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                                Text("Terminal Cursor", style = MaterialTheme.typography.bodyLarge)
+                            }
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                TerminalCursorShape.entries.forEach { shape ->
+                                    SettingsUnitPill(
+                                        label = shape.name.lowercase().replaceFirstChar { it.uppercase() },
+                                        selected = prefs.terminalAppearance.cursorShape == shape,
+                                        onClick = { viewModel.setTerminalCursor(shape) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    ExpressiveGroupedItem(index = 5, count = 6) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    ExpressiveIconTile(
+                                        icon = Icons.Rounded.History,
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    )
+                                    Text("Terminal Scrollback", style = MaterialTheme.typography.bodyLarge)
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                ) {
+                                    Text(
+                                        text = "${clampedScrollback(prefs.terminalAppearance.scrollbackLines)} lines",
+                                        style = MaterialTheme.typography.labelMedium.merge(design.monoNumericStyle),
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    )
+                                }
+                            }
+                            Slider(
+                                value = clampedScrollback(prefs.terminalAppearance.scrollbackLines).toFloat(),
+                                onValueChange = { viewModel.setTerminalScrollback(it.roundToInt()) },
+                                valueRange = SettingsViewModel.MIN_SCROLLBACK_LINES.toFloat()..
+                                    SettingsViewModel.MAX_SCROLLBACK_LINES.toFloat(),
+                                steps = (SettingsViewModel.MAX_SCROLLBACK_LINES - SettingsViewModel.MIN_SCROLLBACK_LINES) / 100 - 1,
+                            )
+                            Text(
+                                text = "History kept above the prompt (the terminal emulator caps at ${SettingsViewModel.MAX_SCROLLBACK_LINES} lines)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
@@ -923,6 +1120,13 @@ fun SettingsScreen(
                                                 text = snip.commandTemplate,
                                                 style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
                                                 color = MaterialTheme.colorScheme.primary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            Text(
+                                                text = runbookTargetLabel(snip.targetTags, state.servers),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
@@ -1255,6 +1459,19 @@ fun SettingsScreen(
                         value = tags,
                         onValueChange = { tags = it },
                         label = { Text("Target Tags (comma separated)") },
+                        supportingText = {
+                            // Live broadcast targeting: nodes match when they carry any tag.
+                            val targetTags = tags.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                            val targetCount = snippetTargetServers(state.servers, targetTags).size
+                            Text(
+                                text = if (targetTags.isEmpty()) {
+                                    "No tags: broadcasts run on all ${state.servers.size} node(s)"
+                                } else {
+                                    "Targets $targetCount of ${state.servers.size} matching node(s) — assign tags on a node's edit sheet"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        },
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth(),

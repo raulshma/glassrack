@@ -38,14 +38,14 @@ import com.raulshma.grack.MainActivity
 import com.raulshma.grack.core.database.GlassrackRepository
 import com.raulshma.grack.core.model.AuditCategory
 import com.raulshma.grack.core.model.ContainerAction
-import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerState
 import com.raulshma.grack.core.model.Formatters
-import com.raulshma.grack.core.model.MetricSnapshot
 import com.raulshma.grack.core.model.Server
-import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.TriggerSource
+import com.raulshma.grack.core.model.WidgetClusterSnapshot
+import com.raulshma.grack.core.model.deriveWidgetClusterSnapshot
 import com.raulshma.grack.core.model.requiresConfirmation
+import com.raulshma.grack.core.ssh.ContainerStateCache
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.worker.TelemetryRefreshWorker
 import com.patrykandpatrick.vico.compose.cartesian.data.CartesianChartModel
@@ -66,42 +66,32 @@ private val PARAM_ACTION_TYPE = ActionParameters.Key<String>("action_type")
 private object WidgetKoin {
     fun repository(): GlassrackRepository = GlobalContext.get().get()
     fun controller(): HomelabController = GlobalContext.get().get()
+    fun containerCache(): ContainerStateCache? = GlobalContext.get().getOrNull()
 }
 
-private data class WidgetClusterSnapshot(
-    val servers: List<Server>,
-    val latestByServer: Map<String, MetricSnapshot>,
-    val historyByServer: Map<String, List<MetricSnapshot>>,
-    val containers: List<Pair<Server, ContainerInfo>>,
-)
-
+/**
+ * Widget rendering reads only on-device data: repository metrics, the controller's in-memory
+ * runtime states and the persisted container cache. A widget update must never cause SSH
+ * traffic; fresh telemetry arrives exclusively through the periodic TelemetryRefreshWorker.
+ */
 private suspend fun loadSnapshot(): WidgetClusterSnapshot {
     val repo = WidgetKoin.repository()
-    val ctrl = WidgetKoin.controller()
     val servers = repo.getServersOnce()
     val historyMap = repo.recentMetricsByServer.first()
-    val runtimeMap = ctrl.runtimeStates.value
-    val latestMap = servers.mapNotNull { srv ->
-        val snap = runtimeMap[srv.id]?.latestMetric ?: historyMap[srv.id]?.lastOrNull()
-        snap?.let { srv.id to it }
-    }.toMap()
-    val ctrs = servers.flatMap { srv ->
-        runCatching { ctrl.fetchContainers(srv).map { srv to it } }.getOrDefault(emptyList())
-    }.take(4)
-    return WidgetClusterSnapshot(
+    val runtimeMap = WidgetKoin.controller().runtimeStates.value
+    val cachedContainers = WidgetKoin.containerCache()?.allEntries().orEmpty()
+    return deriveWidgetClusterSnapshot(
         servers = servers,
-        latestByServer = latestMap,
-        historyByServer = historyMap,
-        containers = ctrs,
+        metricsByServer = historyMap,
+        runtimeStates = runtimeMap,
+        cachedContainers = cachedContainers,
     )
 }
 
 class RefreshAllWidgetsCallback : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        val ctrl = WidgetKoin.controller()
-        WidgetKoin.repository().getServersOnce().forEach { srv ->
-            runCatching { ctrl.pollServerOnce(srv) }
-        }
+        // No SSH from a widget tap: re-render from stored data; the periodic worker
+        // provides fresh telemetry.
         TelemetryRefreshWorker.refreshAllWidgets(context)
     }
 }
@@ -130,7 +120,10 @@ class ToggleContainerWidgetCallback : ActionCallback {
             )
             return
         }
-        val container = ctrl.fetchContainers(server).firstOrNull { it.name == ctrName } ?: return
+        // Resolve the target from the last-known cache: rows rendered on the widget came
+        // from it, so no SSH lookup is needed before the audited action itself.
+        val container = WidgetKoin.containerCache()?.containersFor(serverId)
+            ?.firstOrNull { it.name == ctrName } ?: return
         ctrl.performContainerAction(server, container, action, TriggerSource.WIDGET)
         TelemetryRefreshWorker.refreshAllWidgets(context)
     }
@@ -199,6 +192,11 @@ private fun ClusterPulseContent(context: Context, data: WidgetClusterSnapshot) {
             Text(
                 text = "CPU ${Formatters.formatPercent(avgCpu)} · Containers $runningCtrs/$totalCtrs",
                 style = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium),
+            )
+            Text(
+                text = Formatters.formatWidgetAge(data.lastUpdateEpochMs, System.currentTimeMillis()),
+                style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 10.sp),
+                maxLines = 1,
             )
             Spacer(GlanceModifier.height(8.dp))
             Row(modifier = GlanceModifier.fillMaxWidth()) {
@@ -269,6 +267,14 @@ class ServerTelemetryWidget : GlanceAppWidget() {
                             text = "Temp ${snap?.tempC?.let { "${it.toInt()}°C" } ?: "—"}",
                             style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 11.sp),
                         )
+                        Text(
+                            text = Formatters.formatWidgetAge(
+                                data.latestByServer[server?.id]?.timestampEpochMs ?: data.lastUpdateEpochMs,
+                                System.currentTimeMillis(),
+                            ),
+                            style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 10.sp),
+                            maxLines = 1,
+                        )
                         if (hist.size >= 2) {
                             Spacer(GlanceModifier.height(4.dp))
                             val vals = hist.takeLast(16).map { it.cpuPct.toDouble() }
@@ -320,6 +326,19 @@ class ContainerControlWidget : GlanceAppWidget() {
                             )
                         }
                         Spacer(GlanceModifier.height(6.dp))
+                        if (data.containers.isEmpty()) {
+                            Text(
+                                text = "No cached container state yet — open the app to populate",
+                                style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 11.sp),
+                                maxLines = 1,
+                            )
+                        } else {
+                            Text(
+                                text = Formatters.formatWidgetAge(data.containersUpdatedAtEpochMs, System.currentTimeMillis()),
+                                style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 10.sp),
+                                maxLines = 1,
+                            )
+                        }
                         data.containers.forEach { (srv, ctr) ->
                             val running = ctr.state == ContainerState.RUNNING
                             val dot = if (running) "●" else "○"

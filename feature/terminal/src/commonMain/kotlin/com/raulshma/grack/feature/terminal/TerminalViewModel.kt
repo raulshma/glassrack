@@ -2,6 +2,7 @@ package com.raulshma.grack.feature.terminal
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import co.touchlab.kermit.Logger
 import com.raulshma.grack.core.database.GlassrackRepository
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.Snippet
@@ -193,6 +194,18 @@ class TerminalViewModel(
 
     fun dismissSnippetVars() { _pendingVars.value = null }
     fun clearError() { _error.value = null }
+
+    /**
+     * Leaving the SSH tab destroys this ViewModel: without this teardown every emulator
+     * and its SSH channel would stay open for the life of the process.
+     */
+    override fun onCleared() {
+        _tabs.value.forEach { tab ->
+            runCatching { tab.controller.close() }
+                .onFailure { Logger.w(it) { "Failed to close terminal tab ${tab.tabId}" } }
+        }
+        _tabs.value = emptyList()
+    }
 
     private fun activeTab(): TerminalTabSession? =
         _tabs.value.firstOrNull { it.tabId == _activeTabId.value }

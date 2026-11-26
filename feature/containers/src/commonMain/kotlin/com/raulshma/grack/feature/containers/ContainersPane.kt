@@ -169,7 +169,8 @@ fun ContainersPane(
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Refresh,
-                        contentDescription = "Refresh containers",
+                        // Decorative: the button's "Refresh" text is already read by TalkBack.
+                        contentDescription = null,
                         modifier = Modifier.size(16.dp),
                     )
                     Spacer(Modifier.width(4.dp))

@@ -140,6 +140,16 @@ data class Snippet(
     val sortOrder: Int = 0,
 )
 
+/**
+ * Nodes a snippet broadcast would reach. A snippet without target tags targets every node;
+ * otherwise a node matches when any of its tags appears in the snippet's target list.
+ * Used by broadcast execution and by the "N matching nodes" UI.
+ */
+fun snippetTargetServers(servers: List<Server>, targetTags: List<String>): List<Server> {
+    if (targetTags.isEmpty()) return servers
+    return servers.filter { srv -> srv.tags.any { it in targetTags } }
+}
+
 @Serializable
 enum class SshKeyAlgorithm {
     ED25519,

@@ -65,6 +65,22 @@ object Formatters {
         }
     }
 
+    /**
+     * Relative "Updated Xm ago" text for widgets, derived from the newest data timestamp.
+     * Pure in [nowEpochMs] so widgets and tests stay deterministic.
+     */
+    fun formatWidgetAge(updatedAtEpochMs: Long?, nowEpochMs: Long): String {
+        if (updatedAtEpochMs == null) return "No data yet"
+        val ageMin = ((nowEpochMs - updatedAtEpochMs) / 60_000L).coerceAtLeast(0L)
+        val ageHours = ageMin / 60L
+        return when {
+            ageMin < 1L -> "Updated just now"
+            ageHours < 1L -> "Updated ${ageMin}m ago"
+            ageHours < 24L -> "Updated ${ageHours}h ago"
+            else -> "Updated ${ageMin / 1_440L}d ago"
+        }
+    }
+
     /** Formats an epoch millisecond timestamp in the local timezone as `MMM dd, HH:mm:ss`. */
     fun formatTimestamp(epochMs: Long): String {
         val dt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
