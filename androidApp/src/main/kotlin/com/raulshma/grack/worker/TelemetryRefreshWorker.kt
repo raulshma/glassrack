@@ -1,15 +1,9 @@
 package com.raulshma.grack.worker
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import androidx.glance.appwidget.updateAll
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.raulshma.grack.GlassrackApplication
 import com.raulshma.grack.core.database.GlassrackRepository
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.widget.ActionStripWidget
@@ -32,17 +26,8 @@ class TelemetryRefreshWorker(
         servers.forEach { srv ->
             runCatching { controller.pollServerOnce(srv) }
         }
-        val alerts = controller.activeAlerts.value
-        if (alerts.isNotEmpty() && ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-            val latest = alerts.last()
-            val notif = NotificationCompat.Builder(applicationContext, GlassrackApplication.CHANNEL_ALERTS)
-                .setSmallIcon(android.R.drawable.stat_notify_error)
-                .setContentTitle("GRack Alert · ${latest.serverName}")
-                .setContentText(latest.message)
-                .setAutoCancel(true)
-                .build()
-            NotificationManagerCompat.from(applicationContext).notify(latest.id.hashCode(), notif)
-        }
+        // Alert notifications are posted by AlertNotificationCoordinator (see GlassrackApplication);
+        // the worker only refreshes the widgets here.
         refreshAllWidgets(applicationContext)
         return Result.success()
     }

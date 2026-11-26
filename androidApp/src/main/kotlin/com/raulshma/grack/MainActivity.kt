@@ -1,11 +1,15 @@
 package com.raulshma.grack
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -16,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import com.raulshma.grack.core.security.ActivityHolder
@@ -24,6 +29,10 @@ class MainActivity : FragmentActivity() {
 
     private var deepLinkDest by mutableStateOf<String?>(null)
     private var deepLinkServerId by mutableStateOf<String?>(null)
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* user decision is surfaced later via Settings' notification row */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -38,6 +47,7 @@ class MainActivity : FragmentActivity() {
         )
         super.onCreate(savedInstanceState)
         parseIntent(intent)
+        requestNotificationPermissionOnce()
 
         setContent {
             val ctx = LocalContext.current
@@ -72,6 +82,20 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /** Requests POST_NOTIFICATIONS exactly once per install; Settings offers a manual retry row. */
+    private fun requestNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val prefs = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_NOTIFICATION_PERMISSION_REQUESTED, false)) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        prefs.edit().putBoolean(KEY_NOTIFICATION_PERMISSION_REQUESTED, true).apply()
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         parseIntent(intent)
@@ -95,5 +119,7 @@ class MainActivity : FragmentActivity() {
     companion object {
         const val EXTRA_DEST = "glassrack_dest"
         const val EXTRA_SERVER_ID = "glassrack_server_id"
+        private const val PREFERENCES = "glassrack_main"
+        private const val KEY_NOTIFICATION_PERMISSION_REQUESTED = "notification_permission_requested"
     }
 }

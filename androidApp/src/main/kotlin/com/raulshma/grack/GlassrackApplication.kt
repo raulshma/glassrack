@@ -9,11 +9,23 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.raulshma.grack.di.initGlassrackKoin
+import com.raulshma.grack.core.ssh.HomelabController
+import com.raulshma.grack.notify.AlertNotificationCoordinator
+import com.raulshma.grack.notify.AndroidAlertNotifier
 import com.raulshma.grack.worker.TelemetryRefreshWorker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import org.koin.android.ext.koin.androidContext
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import java.util.concurrent.TimeUnit
 
-class GlassrackApplication : Application() {
+class GlassrackApplication : Application(), KoinComponent {
+    private val coordinatorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val controller: HomelabController by inject()
+
     override fun onCreate() {
         super.onCreate()
         initGlassrackKoin {
@@ -21,6 +33,15 @@ class GlassrackApplication : Application() {
         }
         createNotificationChannels()
         scheduleBackgroundPolling()
+        startAlertNotifications()
+    }
+
+    private fun startAlertNotifications() {
+        AlertNotificationCoordinator(
+            scope = coordinatorScope,
+            controller = controller,
+            notifier = AndroidAlertNotifier(this),
+        ).start()
     }
 
     private fun createNotificationChannels() {

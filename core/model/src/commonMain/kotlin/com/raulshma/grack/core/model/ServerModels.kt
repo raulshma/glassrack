@@ -39,6 +39,12 @@ data class OsCapabilities(
     val hasNvidiaSmi: Boolean = false,
     val hasVcgencmd: Boolean = false,
     val hasSudo: Boolean = false,
+    /** os-release `ID=` (debian, fedora, arch, alpine, ...). */
+    val distroId: String = "",
+    /** True when the login user is root (`id -u` == 0). */
+    val isRoot: Boolean = false,
+    /** Version of the probe script that produced this snapshot; 0 means pre-probe-versioning. */
+    val probeVersion: Int = 0,
 )
 
 @Immutable

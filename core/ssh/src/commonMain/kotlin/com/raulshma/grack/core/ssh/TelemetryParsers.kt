@@ -77,6 +77,12 @@ class TelemetrySampleCache {
 }
 
 object TelemetryParsers {
+    /**
+     * Bumped whenever [TelemetryProbes.detectCapabilitiesScript] or capability parsing changes
+     * semantics. Controllers re-probe nodes whose stored `probeVersion` is behind this value.
+     */
+    const val CAPABILITIES_PROBE_VERSION = 1
+
     fun splitSections(output: String): Map<String, String> {
         val result = mutableMapOf<String, StringBuilder>()
         var currentKey: String? = null
@@ -98,6 +104,9 @@ object TelemetryParsers {
         val osLines = sec["OS"].orEmpty().lines()
         val pretty = osLines.firstOrNull { it.startsWith("PRETTY_NAME=") }
             ?.substringAfter("=")?.trim('"') ?: ""
+        val distroId = osLines.firstOrNull { it.startsWith("ID=") }
+            ?.substringAfter("=")?.trim()?.removeSurrounding("\"").orEmpty()
+        val isRoot = sec["UID"].orEmpty().trim() == "0"
         val model = sec["MODEL"].orEmpty()
         val bins = sec["BINS"].orEmpty().lines()
             .mapNotNull { line ->
@@ -123,6 +132,9 @@ object TelemetryParsers {
             hasNvidiaSmi = bins["nvidia-smi"] == true,
             hasVcgencmd = bins["vcgencmd"] == true,
             hasSudo = bins["sudo"] == true,
+            distroId = distroId,
+            isRoot = isRoot,
+            probeVersion = CAPABILITIES_PROBE_VERSION,
         )
     }
 

@@ -26,10 +26,13 @@ import com.raulshma.grack.core.model.SystemdUnit
 import com.raulshma.grack.core.model.TriggerSource
 import com.raulshma.grack.core.model.currentTimeEpochMs
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,13 +40,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
 
 class HomelabController(
     private val repository: GlassrackRepository,
-    private val sshClient: PlatformSshClient,
+    private val sshClient: SshSessionClient,
+    backgroundDispatcher: CoroutineContext = Dispatchers.Default,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + backgroundDispatcher)
     private val sampleCache = TelemetrySampleCache()
+
+    private val controllerJob: Job = scope.coroutineContext[Job]!!
 
     private val _runtimeStates = MutableStateFlow<Map<String, ServerRuntimeState>>(emptyMap())
     val runtimeStates: StateFlow<Map<String, ServerRuntimeState>> = _runtimeStates.asStateFlow()
@@ -57,6 +65,9 @@ class HomelabController(
     private val pollingJobs = mutableMapOf<String, Job>()
     private var latestServers: List<Server> = emptyList()
     private var latestRules: List<AlertRule> = emptyList()
+
+    /** Consecutive failed polls per server; drives SERVER_OFFLINE alerts (item: offline alerts). */
+    private val consecutiveFailures = MutableStateFlow<Map<String, Int>>(emptyMap())
 
     init {
         scope.launch {
@@ -85,6 +96,13 @@ class HomelabController(
         scope.launch {
             repository.alertRules.collect { rules ->
                 latestRules = rules
+            }
+        }
+        scope.launch {
+            while (isActive) {
+                delay(IDLE_PRUNE_INTERVAL_MS)
+                runCatching { sshClient.disconnectIdle(IDLE_PRUNE_MAX_IDLE_MS) }
+                    .onFailure { Logger.w(it) { "Idle session prune failed" } }
             }
         }
     }
@@ -126,11 +144,12 @@ class HomelabController(
 
         try {
             var activeServer = server
-            if (activeServer.capabilities.distro.isBlank()) {
+            val caps = activeServer.capabilities
+            if (caps.distro.isBlank() || caps.probeVersion < TelemetryParsers.CAPABILITIES_PROBE_VERSION) {
                 val capResult = sshClient.execute(activeServer, latestServers, TelemetryProbes.detectCapabilitiesScript(), 10_000L)
                 if (capResult.exitCode == 0 && capResult.stdout.isNotBlank()) {
-                    val caps = TelemetryParsers.parseCapabilities(capResult.stdout)
-                    activeServer = activeServer.copy(capabilities = caps)
+                    val freshCaps = TelemetryParsers.parseCapabilities(capResult.stdout)
+                    activeServer = activeServer.copy(capabilities = freshCaps)
                     repository.upsertServer(activeServer)
                 }
             }
@@ -149,8 +168,10 @@ class HomelabController(
             )
             repository.recordMetricSnapshot(snapshot)
             updateSuccessState(activeServer, snapshot)
+            consecutiveFailures.update { it - server.id }
             evaluateAlerts(activeServer, snapshot)
         } catch (challengeEx: HostKeyChallengeException) {
+            recordPollFailure(server, challengeEx.message ?: "Host key rejected")
             _runtimeStates.update { map ->
                 val cur = map[server.id] ?: ServerRuntimeState(server)
                 map + (server.id to cur.copy(
@@ -161,6 +182,7 @@ class HomelabController(
             }
         } catch (t: Throwable) {
             Logger.w(t) { "Poll failed for ${server.name}" }
+            recordPollFailure(server, t.message ?: "Connection failed")
             _runtimeStates.update { map ->
                 val cur = map[server.id] ?: ServerRuntimeState(server)
                 map + (server.id to cur.copy(
@@ -168,6 +190,34 @@ class HomelabController(
                     lastError = t.message ?: "Connection failed",
                 ))
             }
+        }
+    }
+
+    /** Counts a failed poll and raises SERVER_OFFLINE rules once failures reach the threshold. */
+    private fun recordPollFailure(server: Server, error: String) {
+        val failures = (consecutiveFailures.value[server.id] ?: 0) + 1
+        consecutiveFailures.update { it + (server.id to failures) }
+        if (failures < OFFLINE_ALERT_FAILURE_THRESHOLD) return
+        val offlineAlerts = latestRules
+            .filter {
+                it.enabled && it.metric == AlertMetric.SERVER_OFFLINE &&
+                    (it.serverId == null || it.serverId == server.id)
+            }
+            .map { rule ->
+                AppAlert(
+                    id = "${rule.id}-${server.id}",
+                    ruleId = rule.id,
+                    serverId = server.id,
+                    serverName = server.name,
+                    message = "${rule.name}: unreachable ($failures consecutive failed polls, last error: $error)",
+                    timestampEpochMs = currentTimeEpochMs(),
+                    severity = ServerHealth.OFFLINE,
+                )
+            }
+        if (offlineAlerts.isEmpty()) return
+        _activeAlerts.update { existing ->
+            val withoutServer = existing.filterNot { it.serverId == server.id }
+            (withoutServer + offlineAlerts).takeLast(20)
         }
     }
 
@@ -239,16 +289,17 @@ class HomelabController(
         command: String,
         triggerSource: TriggerSource = TriggerSource.UI,
         streaming: Boolean = false,
+        timeoutMs: Long = DEFAULT_ACTION_TIMEOUT_MS,
     ): SshExecResult {
         val started = currentTimeEpochMs()
         val jobId = repository.startJob(server.id, server.name, actionTitle, command, started)
         return try {
             val result = if (streaming) {
-                sshClient.executeStreaming(server, latestServers, command) { chunk ->
+                sshClient.executeStreaming(server, latestServers, command, timeoutMs) { chunk ->
                     repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
                 }
             } else {
-                sshClient.execute(server, latestServers, command)
+                sshClient.execute(server, latestServers, command, timeoutMs)
             }
             val outcome = if (result.exitCode == 0) AuditOutcome.SUCCESS else AuditOutcome.FAILED
             repository.finishJob(
@@ -272,6 +323,12 @@ class HomelabController(
                 outputSnippet = result.stdout.ifBlank { result.stderr },
             )
             result
+        } catch (timeoutEx: TimeoutCancellationException) {
+            recordUnfinishedAction(server, category, actionTitle, command, triggerSource, jobId, started, AuditOutcome.TIMEOUT, timeoutEx.message)
+            SshExecResult(-1, "", "Timed out after ${timeoutMs}ms: ${timeoutEx.message ?: actionTitle}", currentTimeEpochMs() - started)
+        } catch (cancelled: CancellationException) {
+            recordUnfinishedAction(server, category, actionTitle, command, triggerSource, jobId, started, AuditOutcome.CANCELLED, cancelled.message)
+            throw cancelled
         } catch (t: Throwable) {
             val elapsed = currentTimeEpochMs() - started
             repository.finishJob(jobId, JobPhase.FAILED, -1, elapsed, t.message)
@@ -289,6 +346,43 @@ class HomelabController(
                 outputSnippet = t.message.orEmpty(),
             )
             SshExecResult(-1, "", t.message ?: "Execution failed", elapsed)
+        }
+    }
+
+    private suspend fun recordUnfinishedAction(
+        server: Server,
+        category: AuditCategory,
+        actionTitle: String,
+        command: String,
+        triggerSource: TriggerSource,
+        jobId: String,
+        startedEpochMs: Long,
+        outcome: AuditOutcome,
+        reason: String?,
+    ) {
+        // NonCancellable: on a cancelled action the calling scope is already cancelled, and
+        // without this the audit/job bookkeeping would itself be aborted by cancellation.
+        withContext(NonCancellable) {
+            val elapsed = currentTimeEpochMs() - startedEpochMs
+            val phase = when (outcome) {
+                AuditOutcome.TIMEOUT -> JobPhase.FAILED
+                AuditOutcome.CANCELLED -> JobPhase.CANCELLED
+                else -> JobPhase.FAILED
+            }
+            repository.finishJob(jobId, phase, -1, elapsed, reason)
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = category,
+                actionTitle = actionTitle,
+                rawCommand = command,
+                triggerSource = triggerSource,
+                outcome = outcome,
+                exitCode = -1,
+                durationMs = elapsed,
+                outputSnippet = reason.orEmpty(),
+            )
         }
     }
 
@@ -347,30 +441,14 @@ class HomelabController(
                 }
             }
         }
-        val started = currentTimeEpochMs()
-        val jobId = repository.startJob(server.id, server.name, "${action.label} ${container.name}", cmd, started)
-        val result = sshClient.executeStreaming(server, latestServers, cmd) { chunk ->
-            repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
-        }
-        repository.finishJob(
-            jobId = jobId,
-            phase = if (result.exitCode == 0) JobPhase.SUCCEEDED else JobPhase.FAILED,
-            exitCode = result.exitCode,
-            durationMs = result.durationMs,
-            outputTail = result.stdout.ifBlank { result.stderr },
-        )
-        repository.recordAudit(
-            timestampEpochMs = currentTimeEpochMs(),
-            serverId = server.id,
-            serverNameSnapshot = server.name,
+        val result = executeAuditedAction(
+            server = server,
             category = AuditCategory.CONTAINER,
             actionTitle = "Container ${action.label}: ${container.name}",
-            rawCommand = cmd,
+            command = cmd,
             triggerSource = triggerSource,
-            outcome = if (result.exitCode == 0) AuditOutcome.SUCCESS else AuditOutcome.FAILED,
-            exitCode = result.exitCode,
-            durationMs = result.durationMs,
-            outputSnippet = result.stdout.ifBlank { result.stderr },
+            streaming = true,
+            timeoutMs = CONTAINER_ACTION_TIMEOUT_MS,
         )
         pollServerOnce(server)
         return result
@@ -387,30 +465,15 @@ class HomelabController(
         } else {
             "docker compose -p '$projectName' $verb"
         }
-        val started = currentTimeEpochMs()
-        val jobId = repository.startJob(server.id, server.name, "Compose $verb: $projectName", cmd, started)
-        val result = sshClient.executeStreaming(server, latestServers, cmd, 120_000L) { chunk ->
-            repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
-        }
-        repository.finishJob(
-            jobId = jobId,
-            phase = if (result.exitCode == 0) JobPhase.SUCCEEDED else JobPhase.FAILED,
-            exitCode = result.exitCode,
-            durationMs = result.durationMs,
-            outputTail = result.stdout.ifBlank { result.stderr },
-        )
-        repository.recordAudit(
-            timestampEpochMs = currentTimeEpochMs(),
-            serverId = server.id,
-            serverNameSnapshot = server.name,
+        val isStackUpdate = verb.trim().startsWith("pull") || verb.trim().startsWith("up")
+        val result = executeAuditedAction(
+            server = server,
             category = AuditCategory.CONTAINER,
             actionTitle = "Compose $verb: $projectName",
-            rawCommand = cmd,
+            command = cmd,
             triggerSource = TriggerSource.UI,
-            outcome = if (result.exitCode == 0) AuditOutcome.SUCCESS else AuditOutcome.FAILED,
-            exitCode = result.exitCode,
-            durationMs = result.durationMs,
-            outputSnippet = result.stdout.ifBlank { result.stderr },
+            streaming = true,
+            timeoutMs = if (isStackUpdate) COMPOSE_UPDATE_TIMEOUT_MS else COMPOSE_ACTION_TIMEOUT_MS,
         )
         pollServerOnce(server)
         return result
@@ -556,5 +619,33 @@ class HomelabController(
             actionTitle = if (reboot) "System Reboot" else "System Shutdown",
             command = cmd,
         )
+    }
+
+    /** Cancels the controller's background loops (pollers, idle pruning) at teardown. */
+    fun stop() {
+        controllerJob.cancel()
+    }
+
+    companion object {
+        /** Default budget for audited actions. */
+        const val DEFAULT_ACTION_TIMEOUT_MS: Long = 120_000L
+
+        /** Container verbs are streamed and can take a couple of minutes on slow nodes. */
+        const val CONTAINER_ACTION_TIMEOUT_MS: Long = 120_000L
+
+        /** Regular compose verbs (ps, stop, restart, down...). */
+        const val COMPOSE_ACTION_TIMEOUT_MS: Long = 120_000L
+
+        /** Compose pull/up download images; give them 15 minutes. */
+        const val COMPOSE_UPDATE_TIMEOUT_MS: Long = 15 * 60_000L
+
+        /** How often idle pooled sessions are pruned. */
+        const val IDLE_PRUNE_INTERVAL_MS: Long = 15 * 60_000L
+
+        /** A pooled session idle longer than this is disconnected (unless a tunnel or shell keeps it alive). */
+        const val IDLE_PRUNE_MAX_IDLE_MS: Long = 15 * 60_000L
+
+        /** SERVER_OFFLINE rules fire after this many consecutive failed polls. */
+        const val OFFLINE_ALERT_FAILURE_THRESHOLD: Int = 3
     }
 }

@@ -9,6 +9,8 @@ object TelemetryProbes {
         uname -s -r -m
         echo "===OS==="
         grep -E '^(PRETTY_NAME|ID)=' /etc/os-release 2>/dev/null || true
+        echo "===UID==="
+        id -u 2>/dev/null || true
         echo "===MODEL==="
         tr -d '\0' < /proc/device-tree/model 2>/dev/null || true
         echo "===BINS==="

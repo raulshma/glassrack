@@ -7,6 +7,7 @@ import com.raulshma.grack.core.database.buildGlassrackDatabase
 import com.raulshma.grack.core.database.createPreferencesDataStore
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.core.ssh.PlatformSshClient
+import com.raulshma.grack.core.ssh.SshSessionClient
 import com.raulshma.grack.feature.audit.AuditViewModel
 import com.raulshma.grack.feature.containers.ContainersViewModel
 import com.raulshma.grack.feature.overview.OverviewViewModel
@@ -26,7 +27,7 @@ val glassrackCommonModule = module {
     single<GlassrackDatabase> { buildGlassrackDatabase(get()) }
     single { PreferencesStore(createPreferencesDataStore(get())) }
     single { GlassrackRepository(get(), get(), get()) }
-    single { PlatformSshClient(get(), get()) }
+    single<SshSessionClient> { PlatformSshClient(get(), get()) }
     single { HomelabController(get(), get()) }
 
     viewModel { OverviewViewModel(get(), get()) }
@@ -35,7 +36,7 @@ val glassrackCommonModule = module {
     viewModel { ProcessesViewModel(get(), get(), get()) }
     viewModel { TerminalViewModel(get(), get()) }
     viewModel { AuditViewModel(get()) }
-    viewModel { SettingsViewModel(get(), get()) }
+    viewModel { SettingsViewModel(get(), get(), get()) }
 }
 
 private var koinStarted = false

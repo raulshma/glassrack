@@ -16,7 +16,13 @@ actual class PlatformSshClient actual constructor(
         trustFingerprintOnFirstConnect: Boolean,
     ): Result<HostKeyChallenge?> = Result.failure(UnsupportedOperationException("Native iOS SSH transport pending libssh2 integration"))
 
-    override suspend fun execute(server: Server, allServers: List<Server>, command: String, timeoutMs: Long): SshExecResult =
+    override suspend fun execute(
+        server: Server,
+        allServers: List<Server>,
+        command: String,
+        timeoutMs: Long,
+        stdinText: String?,
+    ): SshExecResult =
         SshExecResult(1, "", "Live SSH is not yet supported on iOS; use Android for live SSH transport.", 0L)
 
     override suspend fun executeStreaming(
@@ -24,17 +30,34 @@ actual class PlatformSshClient actual constructor(
         allServers: List<Server>,
         command: String,
         timeoutMs: Long,
+        stdinText: String?,
         onChunk: suspend (String) -> Unit,
-    ): SshExecResult = execute(server, allServers, command, timeoutMs)
+    ): SshExecResult = execute(server, allServers, command, timeoutMs, stdinText)
 
     override suspend fun openShell(server: Server, allServers: List<Server>, cols: Int, rows: Int): SshShellSession =
         throw UnsupportedOperationException("Live SSH is not yet supported on iOS; use Android for live SSH transport.")
 
-    override suspend fun listFiles(server: Server, allServers: List<Server>, remotePath: String): List<RemoteFileEntry> = emptyList()
+    override suspend fun listFiles(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        timeoutMs: Long,
+    ): List<RemoteFileEntry> = emptyList()
 
-    override suspend fun readFileText(server: Server, allServers: List<Server>, remotePath: String): String = ""
+    override suspend fun readFileText(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        timeoutMs: Long,
+    ): String = ""
 
-    override suspend fun writeFileTextWithBackup(server: Server, allServers: List<Server>, remotePath: String, newContent: String) = Unit
+    override suspend fun writeFileTextWithBackup(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        newContent: String,
+        timeoutMs: Long,
+    ) = Unit
 
     override suspend fun deployPublicKey(server: Server, allServers: List<Server>, publicKeyOpenSsh: String): SshExecResult =
         execute(server, allServers, "")

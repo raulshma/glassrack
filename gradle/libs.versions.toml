@@ -36,6 +36,7 @@ material3-adaptive = "1.4.0-alpha01"
 materialkolor = "5.0.1"
 navigation3 = "1.2.0"
 reorderable = "3.1.0"
+robolectric = "4.16.1"
 termlib = "0.3.15"
 tink = "1.24.0"
 vico = "3.3.1"
@@ -94,6 +95,7 @@ vico-compose = { module = "com.patrykandpatrick.vico:compose", version.ref = "vi
 vico-compose-m3 = { module = "com.patrykandpatrick.vico:compose-m3", version.ref = "vico" }
 vico-compose-glance = { module = "com.patrykandpatrick.vico:compose-glance", version.ref = "vico" }
 reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 filekit-dialogs-compose = { module = "io.github.vinceglb:filekit-dialogs-compose", version.ref = "filekit" }
 
 bcprov-jdk18on = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }

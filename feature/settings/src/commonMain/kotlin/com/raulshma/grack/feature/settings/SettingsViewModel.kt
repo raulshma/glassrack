@@ -18,6 +18,7 @@ import com.raulshma.grack.core.model.TerminalThemePreset
 import com.raulshma.grack.core.model.ThemeVariant
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.currentTimeEpochMs
+import com.raulshma.grack.core.security.NotificationGate
 import com.raulshma.grack.core.security.SshKeyGenerator
 import com.raulshma.grack.core.ssh.HomelabController
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,14 +36,17 @@ data class SettingsUiState(
     val alertRules: List<AlertRule> = emptyList(),
     val servers: List<Server> = emptyList(),
     val statusMessage: String? = null,
+    val notificationsEnabled: Boolean = true,
 )
 
 class SettingsViewModel(
     private val repository: GlassrackRepository,
     private val controller: HomelabController,
+    private val notificationGate: NotificationGate,
 ) : ViewModel() {
 
     private val _message = MutableStateFlow<String?>(null)
+    private val _notificationsEnabled = MutableStateFlow(notificationGate.areNotificationsEnabled())
 
     val uiState: StateFlow<SettingsUiState> = combine(
         repository.preferences,
@@ -51,6 +55,7 @@ class SettingsViewModel(
         repository.alertRules,
         repository.servers,
         _message,
+        _notificationsEnabled,
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         SettingsUiState(
@@ -60,11 +65,21 @@ class SettingsViewModel(
             alertRules = arr[3] as List<AlertRule>,
             servers = arr[4] as List<Server>,
             statusMessage = arr[5] as String?,
+            notificationsEnabled = arr[6] as Boolean,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
 
     fun updatePreferences(transform: (UserPreferences) -> UserPreferences) {
         viewModelScope.launch { repository.updatePreferences(transform) }
+    }
+
+    /** Re-reads the OS notification permission, e.g. after returning from system settings. */
+    fun refreshNotificationState() {
+        _notificationsEnabled.value = notificationGate.areNotificationsEnabled()
+    }
+
+    fun openNotificationSettings() {
+        notificationGate.openNotificationSettings()
     }
 
     fun generateSshKey(alias: String, algorithm: SshKeyAlgorithm, passphrase: String?) {

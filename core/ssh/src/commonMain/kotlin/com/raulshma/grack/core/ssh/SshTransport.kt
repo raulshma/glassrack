@@ -45,6 +45,7 @@ interface SshSessionClient {
         allServers: List<Server>,
         command: String,
         timeoutMs: Long = 15_000L,
+        stdinText: String? = null,
     ): SshExecResult
 
     suspend fun executeStreaming(
@@ -52,6 +53,7 @@ interface SshSessionClient {
         allServers: List<Server>,
         command: String,
         timeoutMs: Long = 60_000L,
+        stdinText: String? = null,
         onChunk: suspend (String) -> Unit,
     ): SshExecResult
 
@@ -66,12 +68,14 @@ interface SshSessionClient {
         server: Server,
         allServers: List<Server>,
         remotePath: String,
+        timeoutMs: Long = 15_000L,
     ): List<RemoteFileEntry>
 
     suspend fun readFileText(
         server: Server,
         allServers: List<Server>,
         remotePath: String,
+        timeoutMs: Long = 15_000L,
     ): String
 
     suspend fun writeFileTextWithBackup(
@@ -79,6 +83,7 @@ interface SshSessionClient {
         allServers: List<Server>,
         remotePath: String,
         newContent: String,
+        timeoutMs: Long = 15_000L,
     )
 
     suspend fun deployPublicKey(

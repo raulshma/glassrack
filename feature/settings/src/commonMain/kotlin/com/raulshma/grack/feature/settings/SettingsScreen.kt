@@ -95,6 +95,7 @@ import com.raulshma.grack.core.model.StorageUnit
 import com.raulshma.grack.core.model.TemperatureUnit
 import com.raulshma.grack.core.model.TerminalThemePreset
 import com.raulshma.grack.core.model.ThemeVariant
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.vinceglb.filekit.dialogs.FileKitDialogSettings
 import io.github.vinceglb.filekit.dialogs.FileKitType
 import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
@@ -129,6 +130,12 @@ fun SettingsScreen(
     var deployTargetKey by remember { mutableStateOf<SshKeyRecord?>(null) }
     var backupPassphraseDialog by remember { mutableStateOf<Boolean?>(null) } // true=export, false=import
     var pendingPassphrase by remember { mutableStateOf("") }
+
+    // Re-check the OS notification permission when the user comes back from system settings.
+    LifecycleResumeEffect(Unit) {
+        viewModel.refreshNotificationState()
+        onPauseOrDispose { }
+    }
 
     val importKeyLauncher = rememberFilePickerLauncher(
         type = FileKitType.File(),
@@ -573,6 +580,47 @@ fun SettingsScreen(
                                     }
                                 },
                             )
+                        }
+                    }
+                }
+
+                // Notification permission was denied: alerts stay silent until it is granted.
+                if (!state.notificationsEnabled) {
+                    ExpressiveCard(
+                        tonalContainerColor = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(24.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                ExpressiveIconTile(
+                                    icon = Icons.Rounded.NotificationsActive,
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                )
+                                Column {
+                                    Text("Alerts Are Muted", style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        text = "Notification permission was denied, so threshold and offline alerts stay silent",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = viewModel::openNotificationSettings,
+                                shape = RoundedCornerShape(999.dp),
+                            ) {
+                                Text("Enable")
+                            }
                         }
                     }
                 }
