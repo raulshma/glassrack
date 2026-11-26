@@ -43,6 +43,7 @@ import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Restore
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Storage
@@ -98,7 +99,9 @@ import com.raulshma.grack.core.designsystem.monoNumericStyle
 import com.raulshma.grack.core.model.AlertMetric
 import com.raulshma.grack.core.model.ConfirmationLevel
 import com.raulshma.grack.core.model.DensityMode
+import com.raulshma.grack.core.model.Formatters
 import com.raulshma.grack.core.model.Server
+import com.raulshma.grack.core.model.Snippet
 import com.raulshma.grack.core.model.SshKeyAlgorithm
 import com.raulshma.grack.core.model.SshKeyRecord
 import com.raulshma.grack.core.model.StorageUnit
@@ -106,6 +109,8 @@ import com.raulshma.grack.core.model.TemperatureUnit
 import com.raulshma.grack.core.model.TerminalCursorShape
 import com.raulshma.grack.core.model.TerminalThemePreset
 import com.raulshma.grack.core.model.ThemeVariant
+import com.raulshma.grack.core.model.currentTimeEpochMs
+import com.raulshma.grack.core.model.scheduleStatusLabel
 import com.raulshma.grack.core.model.snippetTargetServers
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.vinceglb.filekit.dialogs.FileKitDialogSettings
@@ -142,6 +147,7 @@ private fun runbookTargetLabel(targetTags: List<String>, servers: List<Server>):
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
+    onOpenAudit: (String) -> Unit = {},
     viewModel: SettingsViewModel = koinViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -157,6 +163,7 @@ fun SettingsScreen(
     var deployTargetKey by remember { mutableStateOf<SshKeyRecord?>(null) }
     var backupPassphraseDialog by remember { mutableStateOf<Boolean?>(null) } // true=export, false=import
     var pendingPassphrase by remember { mutableStateOf("") }
+    var scheduleTargetSnippet by remember { mutableStateOf<Snippet?>(null) }
 
     // Re-check the OS notification permission when the user comes back from system settings.
     LifecycleResumeEffect(Unit) {
@@ -1130,6 +1137,34 @@ fun SettingsScreen(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
+                                            if (snip.scheduleSpec != null) {
+                                                Text(
+                                                    text = "Schedule: ${snip.scheduleSpec} · " +
+                                                        "targets ${snippetTargetServers(state.servers, snip.scheduleTargets ?: snip.targetTags).size} node(s)",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.tertiary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                            // Last scheduled run: tapping it opens the audit ledger
+                                            // filtered by this runbook's name.
+                                            snip.lastRunStatus?.let { status ->
+                                                val label = scheduleStatusLabel(status)
+                                                Text(
+                                                    text = "Last run: $label" +
+                                                        (snip.lastRunEpochMs?.let {
+                                                            " · " + Formatters.formatWidgetAge(it, currentTimeEpochMs())
+                                                        }.orEmpty()),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.clickable(
+                                                        onClickLabel = "Open audit for ${snip.name}",
+                                                    ) { onOpenAudit(snip.name) },
+                                                )
+                                            }
                                         }
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1139,6 +1174,16 @@ fun SettingsScreen(
                                             modifier = Modifier.size(36.dp),
                                         ) {
                                             Icon(Icons.Rounded.PlayArrow, contentDescription = "Broadcast", modifier = Modifier.size(18.dp))
+                                        }
+                                        FilledTonalIconButton(
+                                            onClick = { scheduleTargetSnippet = snip },
+                                            modifier = Modifier.size(36.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.Schedule,
+                                                contentDescription = "Schedule",
+                                                modifier = Modifier.size(18.dp),
+                                            )
                                         }
                                         IconButton(
                                             onClick = { viewModel.deleteSnippet(snip.id) },
@@ -1498,6 +1543,15 @@ fun SettingsScreen(
                     Text("Cancel")
                 }
             },
+        )
+    }
+
+    scheduleTargetSnippet?.let { snippet ->
+        SnippetScheduleEditorDialog(
+            snippet = snippet,
+            servers = state.servers,
+            onSave = { specRaw, targets -> viewModel.saveSchedule(snippet, specRaw, targets) },
+            onDismiss = { scheduleTargetSnippet = null },
         )
     }
 

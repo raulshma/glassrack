@@ -135,6 +135,9 @@ interface SnippetDao {
     @Query("SELECT * FROM snippets ORDER BY sortOrder ASC, name ASC")
     suspend fun getAllOnce(): List<SnippetEntity>
 
+    @Query("SELECT * FROM snippets WHERE id = :id")
+    suspend fun getById(id: String): SnippetEntity?
+
     @Upsert
     suspend fun upsert(entity: SnippetEntity)
 

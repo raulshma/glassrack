@@ -99,7 +99,14 @@ sealed interface GlassrackRoute {
         val serverId: String? = null,
         val initialCommand: String? = null,
     ) : GlassrackRoute
-    data object Audit : GlassrackRoute
+
+    /**
+     * [searchQuery] seeds the audit search field — the last-run row on a runbook and the
+     * AUTO update notification deep-link here filtered by node/snippet name.
+     */
+    data class Audit(
+        val searchQuery: String? = null,
+    ) : GlassrackRoute
     data object Settings : GlassrackRoute
 }
 
@@ -119,6 +126,7 @@ private enum class TopTab(
 fun GlassrackApp(
     deepLinkServerId: String? = null,
     deepLinkDestination: String? = null,
+    deepLinkQuery: String? = null,
     dynamicSeedColor: Color? = null,
     onConsumeDeepLink: () -> Unit = {},
     onDarkThemeChanged: (Boolean) -> Unit = {},
@@ -152,7 +160,7 @@ fun GlassrackApp(
         }
     }
 
-    LaunchedEffect(deepLinkDestination, deepLinkServerId) {
+    LaunchedEffect(deepLinkDestination, deepLinkServerId, deepLinkQuery) {
         when (deepLinkDestination) {
             "terminal" -> {
                 pendingTermServerId = deepLinkServerId ?: servers.firstOrNull()?.id
@@ -165,6 +173,11 @@ fun GlassrackApp(
                 backStack.add(GlassrackRoute.Servers(deepLinkServerId))
                 onConsumeDeepLink()
             }
+            "audit" -> {
+                backStack.clear()
+                backStack.add(GlassrackRoute.Audit(searchQuery = deepLinkQuery))
+                onConsumeDeepLink()
+            }
         }
     }
 
@@ -174,7 +187,7 @@ fun GlassrackApp(
             TopTab.OVERVIEW -> GlassrackRoute.Overview
             TopTab.SERVERS -> GlassrackRoute.Servers(null)
             TopTab.TERMINAL -> GlassrackRoute.Terminal(pendingTermServerId, pendingTermCmd)
-            TopTab.AUDIT -> GlassrackRoute.Audit
+            TopTab.AUDIT -> GlassrackRoute.Audit(null)
             TopTab.SETTINGS -> GlassrackRoute.Settings
         }
         backStack.clear()
@@ -500,11 +513,15 @@ private fun GlassrackNavDisplay(
                     onConsumedPendingLaunch = onConsumedPendingTerminal,
                 )
             }
-            entry<GlassrackRoute.Audit> {
-                AuditScreen()
+            entry<GlassrackRoute.Audit> { route ->
+                AuditScreen(initialSearchQuery = route.searchQuery)
             }
             entry<GlassrackRoute.Settings> {
-                SettingsScreen()
+                SettingsScreen(
+                    onOpenAudit = { query ->
+                        backStack.add(GlassrackRoute.Audit(searchQuery = query))
+                    },
+                )
             }
         },
         modifier = Modifier.fillMaxSize(),

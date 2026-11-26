@@ -29,6 +29,7 @@ class MainActivity : FragmentActivity() {
 
     private var deepLinkDest by mutableStateOf<String?>(null)
     private var deepLinkServerId by mutableStateOf<String?>(null)
+    private var deepLinkQuery by mutableStateOf<String?>(null)
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -72,10 +73,12 @@ class MainActivity : FragmentActivity() {
             App(
                 deepLinkServerId = deepLinkServerId,
                 deepLinkDestination = deepLinkDest,
+                deepLinkQuery = deepLinkQuery,
                 dynamicSeedColor = dynamicPrimary,
                 onConsumeDeepLink = {
                     deepLinkDest = null
                     deepLinkServerId = null
+                    deepLinkQuery = null
                 },
                 onDarkThemeChanged = { isAppDark = it },
             )
@@ -114,11 +117,14 @@ class MainActivity : FragmentActivity() {
     private fun parseIntent(intent: Intent?) {
         deepLinkDest = intent?.getStringExtra(EXTRA_DEST)
         deepLinkServerId = intent?.getStringExtra(EXTRA_SERVER_ID)
+        deepLinkQuery = intent?.getStringExtra(EXTRA_QUERY)
     }
 
     companion object {
         const val EXTRA_DEST = "glassrack_dest"
         const val EXTRA_SERVER_ID = "glassrack_server_id"
+        /** Free-text filter (audit search) accompanying an [EXTRA_DEST] deep link. */
+        const val EXTRA_QUERY = "glassrack_query"
         private const val PREFERENCES = "glassrack_main"
         private const val KEY_NOTIFICATION_PERMISSION_REQUESTED = "notification_permission_requested"
     }

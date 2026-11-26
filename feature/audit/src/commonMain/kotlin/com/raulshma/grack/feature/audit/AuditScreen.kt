@@ -39,6 +39,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +80,7 @@ import org.koin.compose.viewmodel.koinViewModel
 @Composable
 fun AuditScreen(
     modifier: Modifier = Modifier,
+    initialSearchQuery: String? = null,
     viewModel: AuditViewModel = koinViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -87,6 +89,13 @@ fun AuditScreen(
     var showExportMenu by remember { mutableStateOf(false) }
     var pendingExportFormat by remember { mutableStateOf("json") }
     var showPruneConfirm by remember { mutableStateOf(false) }
+
+    // Deep-link filter (runbook last-run row, AUTO update notification): seed the search once.
+    LaunchedEffect(initialSearchQuery) {
+        if (!initialSearchQuery.isNullOrBlank()) {
+            viewModel.setSearch(initialSearchQuery)
+        }
+    }
 
     val saverLauncher = rememberFileSaverLauncher(
         dialogSettings = FileKitDialogSettings.createDefault(),

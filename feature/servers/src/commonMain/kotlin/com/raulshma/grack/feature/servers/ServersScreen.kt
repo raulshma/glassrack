@@ -96,6 +96,7 @@ import com.raulshma.grack.core.designsystem.ExpressiveSearchField
 import com.raulshma.grack.core.designsystem.ExpressiveSectionHeader
 import com.raulshma.grack.core.designsystem.ExpressiveSegmentedPillGroup
 import com.raulshma.grack.core.designsystem.ExpressiveShapeBadge
+import com.raulshma.grack.core.designsystem.HoldToConfirmPill
 import com.raulshma.grack.core.designsystem.LocalGlassrackDesign
 import com.raulshma.grack.core.designsystem.StatusBeacon
 import com.raulshma.grack.core.designsystem.VicoSparkline
@@ -112,6 +113,7 @@ import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.SshKeyRecord
 import com.raulshma.grack.core.model.SudoAuth
+import com.raulshma.grack.core.model.UpdatePolicy
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.feature.containers.ContainersPane
@@ -1958,6 +1960,12 @@ private fun AddEditServerSheet(
     var sudoAuth by remember { mutableStateOf(initial.sudoAuth) }
     var sudoPassword by remember { mutableStateOf("") }
     var clearSudoPassword by remember { mutableStateOf(false) }
+    // Phase 4 AUTO update consent: flipping to AUTO always requires the hold pill,
+    // regardless of the global destructiveConfirmation level — enabling it IS the consent.
+    var updatePolicyDraft by remember { mutableStateOf(initial.updatePolicy) }
+    var updateOsDraft by remember { mutableStateOf(initial.updateOs) }
+    var updateContainersDraft by remember { mutableStateOf(initial.updateContainers) }
+    var pendingAutoConsent by remember { mutableStateOf(false) }
     var macAddress by remember { mutableStateOf(initial.macAddress) }
     var jumpHostId by remember { mutableStateOf(initial.jumpHostServerId) }
     var pollInterval by remember { mutableStateOf(initial.pollIntervalSec.toString()) }
@@ -1986,6 +1994,9 @@ private fun AddEditServerSheet(
         pollIntervalSec = (pollInterval.toIntOrNull() ?: initial.pollIntervalSec).coerceIn(2, 300),
         notes = notes.trim(),
         sudoAuth = sudoAuth,
+        updatePolicy = updatePolicyDraft,
+        updateOs = updateOsDraft,
+        updateContainers = updateContainersDraft,
     )
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -2247,6 +2258,97 @@ private fun AddEditServerSheet(
                             }
                         }
                     }
+                }
+            }
+
+            ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Text(
+                    text = "Automatic Updates",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(10.dp))
+                ExpressiveSegmentedPillGroup(
+                    options = listOf(UpdatePolicy.MANUAL, UpdatePolicy.AUTO),
+                    selected = updatePolicyDraft,
+                    onSelected = { selected ->
+                        when (selected) {
+                            UpdatePolicy.MANUAL -> {
+                                updatePolicyDraft = UpdatePolicy.MANUAL
+                                pendingAutoConsent = false
+                            }
+                            UpdatePolicy.AUTO -> pendingAutoConsent = true
+                        }
+                    },
+                    label = {
+                        when (it) {
+                            UpdatePolicy.MANUAL -> "Manual"
+                            UpdatePolicy.AUTO -> "AUTO"
+                        }
+                    },
+                )
+                if (pendingAutoConsent || updatePolicyDraft == UpdatePolicy.AUTO) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "OS updates (apt/dnf/pacman/apk upgrade)",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = updateOsDraft,
+                            onCheckedChange = { updateOsDraft = it },
+                            enabled = updatePolicyDraft == UpdatePolicy.AUTO || pendingAutoConsent,
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Container updates (stack update / pull)",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = updateContainersDraft,
+                            onCheckedChange = { updateContainersDraft = it },
+                            enabled = updatePolicyDraft == UpdatePolicy.AUTO || pendingAutoConsent,
+                        )
+                    }
+                }
+                if (pendingAutoConsent) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "AUTO applies updates unattended on a daily schedule — no prompt " +
+                            "at run time, whatever the global confirmation level is. Holding " +
+                            "below is the consent.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    HoldToConfirmPill(
+                        label = "Enable AUTO updates",
+                        onConfirmed = {
+                            updatePolicyDraft = UpdatePolicy.AUTO
+                            pendingAutoConsent = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else if (updatePolicyDraft == UpdatePolicy.AUTO) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "AUTO is armed: the scheduler scans this node daily and applies " +
+                            "the enabled categories (audited as SCHEDULED, a summary notification " +
+                            "is posted). Never reboots.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 

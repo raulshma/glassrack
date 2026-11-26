@@ -8,6 +8,7 @@ import com.raulshma.grack.di.initGlassrackKoin
 fun App(
     deepLinkServerId: String? = null,
     deepLinkDestination: String? = null,
+    deepLinkQuery: String? = null,
     dynamicSeedColor: Color? = null,
     onConsumeDeepLink: () -> Unit = {},
     onDarkThemeChanged: (Boolean) -> Unit = {},
@@ -16,6 +17,7 @@ fun App(
     GlassrackApp(
         deepLinkServerId = deepLinkServerId,
         deepLinkDestination = deepLinkDestination,
+        deepLinkQuery = deepLinkQuery,
         dynamicSeedColor = dynamicSeedColor,
         onConsumeDeepLink = onConsumeDeepLink,
         onDarkThemeChanged = onDarkThemeChanged,

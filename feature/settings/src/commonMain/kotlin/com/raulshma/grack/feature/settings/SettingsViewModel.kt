@@ -17,9 +17,12 @@ import com.raulshma.grack.core.model.TemperatureUnit
 import com.raulshma.grack.core.model.TerminalCursorShape
 import com.raulshma.grack.core.model.TerminalThemePreset
 import com.raulshma.grack.core.model.ThemeVariant
+import com.raulshma.grack.core.model.ScheduleValidation
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.currentTimeEpochMs
+import com.raulshma.grack.core.model.parseScheduleSpec
 import com.raulshma.grack.core.model.snippetTargetServers
+import com.raulshma.grack.core.model.validateSnippetSchedule
 import com.raulshma.grack.core.security.NotificationGate
 import com.raulshma.grack.core.security.SshKeyGenerator
 import com.raulshma.grack.core.ssh.HomelabController
@@ -164,6 +167,35 @@ class SettingsViewModel(
 
     fun deleteSnippet(id: String) {
         viewModelScope.launch { repository.deleteSnippet(id) }
+    }
+
+    /**
+     * Saves (or clears) a runbook's schedule (Phase 4). Confirmation-requiring snippets are
+     * rejected with the validator's explanation — they cannot run unattended. Saving a
+     * schedule also clears the previous run's streak bookkeeping: the failure-streak lives
+     * in `lastRunStatus`, and a (re)scheduled runbook starts with a clean slate.
+     */
+    fun saveSchedule(snippet: Snippet, specRaw: String?, targets: List<String>) {
+        val spec = parseScheduleSpec(specRaw)
+        val validation = validateSnippetSchedule(snippet, spec)
+        if (validation is ScheduleValidation.Invalid) {
+            _message.value = validation.reason
+            return
+        }
+        viewModelScope.launch {
+            repository.upsertSnippet(
+                snippet.copy(
+                    scheduleSpec = specRaw,
+                    scheduleTargets = targets,
+                    lastRunEpochMs = null,
+                    lastRunStatus = null,
+                ),
+            )
+            _message.value = when (spec) {
+                null -> "Schedule cleared for '${snippet.name}'"
+                else -> "Scheduled '${snippet.name}' ($specRaw)"
+            }
+        }
     }
 
     fun addAlertRule(name: String, metric: AlertMetric, threshold: Float) {

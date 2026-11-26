@@ -76,6 +76,8 @@ enum class TriggerSource {
     QUICK_TILE,
     TERMINAL,
     BACKGROUND_WORKER,
+    /** Launched by the Phase 4 WorkManager scheduler (scheduled snippet / AUTO update run). */
+    SCHEDULED,
 }
 
 @Immutable

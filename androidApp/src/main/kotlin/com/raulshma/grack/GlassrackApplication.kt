@@ -18,6 +18,7 @@ import com.raulshma.grack.polling.PollingPauseCoordinator
 import com.raulshma.grack.widget.WidgetContainerCache
 import com.raulshma.grack.widget.grackAndroidModule
 import com.raulshma.grack.worker.TelemetryRefreshWorker
+import com.raulshma.grack.worker.WorkScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,6 +45,7 @@ class GlassrackApplication : Application(), KoinComponent {
         startAlertNotifications()
         startPollingHygiene()
         startAuditRetentionPruning()
+        startScheduledRuns()
     }
 
     private fun startAlertNotifications() {
@@ -74,6 +76,15 @@ class GlassrackApplication : Application(), KoinComponent {
         ).start()
     }
 
+    /** Phase 4: reconcile WorkManager schedules from the snippets and servers flows. */
+    private fun startScheduledRuns() {
+        WorkScheduler(
+            context = this,
+            scope = coordinatorScope,
+            repository = repository,
+        ).start()
+    }
+
     private fun createNotificationChannels() {
         val manager = getSystemService(NotificationManager::class.java) ?: return
         manager.createNotificationChannel(
@@ -88,6 +99,13 @@ class GlassrackApplication : Application(), KoinComponent {
                 CHANNEL_SSH_SERVICE,
                 "Active SSH Terminal Sessions",
                 NotificationManager.IMPORTANCE_LOW,
+            ),
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_SCHEDULED,
+                "Scheduled Runs",
+                NotificationManager.IMPORTANCE_DEFAULT,
             ),
         )
     }
@@ -116,6 +134,7 @@ class GlassrackApplication : Application(), KoinComponent {
     companion object {
         const val CHANNEL_ALERTS = "glassrack_alerts"
         const val CHANNEL_SSH_SERVICE = "glassrack_ssh_fg"
+        const val CHANNEL_SCHEDULED = "glassrack_scheduled"
         const val WORK_TELEMETRY_POLL = "glassrack_telemetry_poll"
     }
 }

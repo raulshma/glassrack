@@ -344,6 +344,20 @@ class GlassrackRepository(
         db.snippetDao().upsert(snippet.toEntity())
     }
 
+    suspend fun getSnippetById(id: String): Snippet? = db.snippetDao().getById(id)?.toDomain()
+
+    /**
+     * Persists (or clears) only a snippet's last-scheduled-run columns, without rewriting
+     * the rest of the row — a scheduled run landing while the user edits the snippet must
+     * not clobber the command or schedule (mirrors [updateUpdateReport]).
+     */
+    suspend fun updateSnippetLastRun(id: String, lastRunEpochMs: Long?, lastRunStatus: String?) {
+        val existing = db.snippetDao().getById(id) ?: return
+        db.snippetDao().upsert(
+            existing.copy(lastRunEpochMs = lastRunEpochMs, lastRunStatus = lastRunStatus),
+        )
+    }
+
     suspend fun deleteSnippet(id: String) {
         db.snippetDao().deleteById(id)
     }
