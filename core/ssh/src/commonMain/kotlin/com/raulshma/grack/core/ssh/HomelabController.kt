@@ -22,9 +22,12 @@ import com.raulshma.grack.core.model.RemoteFileEntry
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.ServerRuntimeState
+import com.raulshma.grack.core.model.SudoAuth
 import com.raulshma.grack.core.model.SystemdUnit
 import com.raulshma.grack.core.model.TriggerSource
 import com.raulshma.grack.core.model.currentTimeEpochMs
+import com.raulshma.grack.core.model.sudoSecretVaultId
+import com.raulshma.grack.core.security.SecureVault
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,8 +44,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
+import kotlin.random.Random
 
 /** The engine binary to invoke for this runtime (podman / docker); used by UI and audit previews too. */
 val ContainerRuntime.binaryName: String
@@ -84,6 +90,10 @@ class HomelabController(
 
     /** Consecutive failed polls per server; drives SERVER_OFFLINE alerts (item: offline alerts). */
     private val consecutiveFailures = MutableStateFlow<Map<String, Int>>(emptyMap())
+
+    /** serverId -> epoch ms until which a successful `sudo -n true` probe stays trusted. */
+    private val passwordlessSudoUntilMs = mutableMapOf<String, Long>()
+    private val sudoProbeMutex = Mutex()
 
     init {
         scope.launch {
@@ -313,16 +323,17 @@ class HomelabController(
         triggerSource: TriggerSource = TriggerSource.UI,
         streaming: Boolean = false,
         timeoutMs: Long = DEFAULT_ACTION_TIMEOUT_MS,
+        stdinText: String? = null,
     ): SshExecResult {
         val started = currentTimeEpochMs()
         val jobId = repository.startJob(server.id, server.name, actionTitle, command, started)
         return try {
             val result = if (streaming) {
-                sshClient.executeStreaming(server, latestServers, command, timeoutMs) { chunk ->
+                sshClient.executeStreaming(server, latestServers, command, timeoutMs, stdinText) { chunk ->
                     repository.appendJobOutput(jobId, chunk, currentTimeEpochMs() - started)
                 }
             } else {
-                sshClient.execute(server, latestServers, command, timeoutMs)
+                sshClient.execute(server, latestServers, command, timeoutMs, stdinText)
             }
             val outcome = if (result.exitCode == 0) AuditOutcome.SUCCESS else AuditOutcome.FAILED
             repository.finishJob(
@@ -432,6 +443,118 @@ class HomelabController(
         )
     }
 
+    /**
+     * Runs a command that may need root, resolving the privilege mode fresh on every call
+     * (Phase 2, request #1). The caller supplies the intent: [command], [category],
+     * [actionTitle] — this function never rewrites or filters verbs.
+     *
+     * Resolution order:
+     * 1. Root login (`capabilities.isRoot`): run [command] as-is.
+     * 2. Passwordless sudo (`sudo -n true` succeeded, cached [SUDO_PROBE_TTL_MS] per server):
+     *    `sudo -n bash -c '<quoted>'`.
+     * 3. A sudo credential is available ([SudoAuth.SEPARATE_PASSWORD] reads vault id
+     *    `srv_sudo_<serverId>`, [SudoAuth.LOGIN_PASSWORD] reads the login credential vault id
+     *    at use time): `sudo -S -p '' bash -c '<quoted>'` with the password delivered on
+     *    stdin, then EOF — sudo would otherwise wait up to 5 minutes for more input.
+     * 4. Otherwise today's fallback: `sudo -n bash -c '<quoted>' || bash -c '<quoted>'`.
+     *
+     * SECURITY: the sudo password exists only in [com.raulshma.grack.core.ssh.SshSessionClient.execute]'s
+     * `stdinText` (sent then EOF, never a PTY). It is never part of the command string, the
+     * job preview, the audit entry, the streamed output or any log line; `sudo -p ''`
+     * suppresses the prompt so it cannot echo back either.
+     */
+    suspend fun executePrivileged(
+        server: Server,
+        command: String,
+        category: AuditCategory,
+        actionTitle: String,
+        vault: SecureVault,
+        triggerSource: TriggerSource = TriggerSource.UI,
+        timeoutMs: Long = DEFAULT_ACTION_TIMEOUT_MS,
+        streaming: Boolean = false,
+    ): SshExecResult {
+        return when (resolvePrivilegeMode(server, vault)) {
+            PrivilegeMode.ROOT ->
+                executeAuditedAction(server, category, actionTitle, command, triggerSource, streaming, timeoutMs)
+            PrivilegeMode.PASSWORDLESS_SUDO ->
+                executeAuditedAction(
+                    server, category, actionTitle, "sudo -n bash -c ${shellQuote(command)}", triggerSource, streaming, timeoutMs,
+                )
+            PrivilegeMode.SUDO_WITH_CREDENTIAL -> {
+                val sudoPassword = sudoPasswordFor(server, vault)
+                if (sudoPassword.isNullOrEmpty()) {
+                    // The credential vanished between resolution and use; fail safe to the fallback.
+                    executeAuditedAction(
+                        server, category, actionTitle, unprivilegedFallbackCommand(command), triggerSource, streaming, timeoutMs,
+                    )
+                } else {
+                    executeAuditedAction(
+                        server,
+                        category,
+                        actionTitle,
+                        "sudo -S -p '' bash -c ${shellQuote(command)}",
+                        triggerSource,
+                        streaming,
+                        timeoutMs,
+                        stdinText = "$sudoPassword\n",
+                    )
+                }
+            }
+            PrivilegeMode.UNPRIVILEGED_FALLBACK ->
+                executeAuditedAction(
+                    server, category, actionTitle, unprivilegedFallbackCommand(command), triggerSource, streaming, timeoutMs,
+                )
+        }
+    }
+
+    /** Resolution order of [executePrivileged]; see its KDoc. */
+    private suspend fun resolvePrivilegeMode(server: Server, vault: SecureVault): PrivilegeMode {
+        if (server.capabilities.isRoot) return PrivilegeMode.ROOT
+        if (hasFreshPasswordlessSudo(server)) return PrivilegeMode.PASSWORDLESS_SUDO
+        if (!sudoPasswordFor(server, vault).isNullOrEmpty()) return PrivilegeMode.SUDO_WITH_CREDENTIAL
+        return PrivilegeMode.UNPRIVILEGED_FALLBACK
+    }
+
+    /** Probes `sudo -n true` (no password, no prompt) and caches success for [SUDO_PROBE_TTL_MS]. */
+    private suspend fun hasFreshPasswordlessSudo(server: Server): Boolean {
+        val now = currentTimeEpochMs()
+        sudoProbeMutex.withLock {
+            val until = passwordlessSudoUntilMs[server.id]
+            if (until != null && now < until) return true
+        }
+        val probe = runCatching {
+            sshClient.execute(server, latestServers, SUDO_PROBE_COMMAND, SUDO_PROBE_TIMEOUT_MS)
+        }.getOrNull()
+        val passwordless = probe != null && probe.exitCode == 0
+        sudoProbeMutex.withLock {
+            if (passwordless) {
+                passwordlessSudoUntilMs[server.id] = currentTimeEpochMs() + SUDO_PROBE_TTL_MS
+            } else {
+                passwordlessSudoUntilMs.remove(server.id)
+            }
+        }
+        return passwordless
+    }
+
+    /**
+     * Reads the sudo credential for [server] from the vault, or null when none is usable.
+     * The returned string must never be embedded in a command, preview, audit entry or log.
+     */
+    private suspend fun sudoPasswordFor(server: Server, vault: SecureVault): String? {
+        val vaultId = when (server.sudoAuth) {
+            SudoAuth.SEPARATE_PASSWORD -> sudoSecretVaultId(server.id)
+            SudoAuth.LOGIN_PASSWORD -> server.credentialVaultId
+            SudoAuth.NONE -> null
+        } ?: return null
+        return runCatching { vault.getSecret(vaultId) }
+            .onFailure { Logger.w(it) { "Sudo credential lookup failed for ${server.name}" } }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun unprivilegedFallbackCommand(command: String): String =
+        "sudo -n bash -c ${shellQuote(command)} || bash -c ${shellQuote(command)}"
+
     suspend fun fetchContainers(server: Server): List<ContainerInfo> {
         val usePodman = !server.capabilities.hasDocker && server.capabilities.hasPodman
         val runtime = if (usePodman) ContainerRuntime.PODMAN else ContainerRuntime.DOCKER
@@ -531,9 +654,24 @@ class HomelabController(
         return TelemetryParsers.parseSystemdAndCron(res.stdout)
     }
 
-    suspend fun performSystemdAction(server: Server, unitName: String, verb: String): SshExecResult {
-        val cmd = "sudo -n systemctl $verb '$unitName' || systemctl $verb '$unitName'"
-        return executeAuditedAction(server, AuditCategory.SERVICE, "Service $verb: $unitName", cmd)
+    /**
+     * systemd unit verb (start/stop/restart/...), routed through [executePrivileged] so it
+     * honours root logins, passwordless sudo and stored sudo credentials. The verb comes
+     * from the caller; the destructive ones are gated upstream by [com.raulshma.grack.core.model.requiresConfirmation].
+     */
+    suspend fun performSystemdAction(
+        server: Server,
+        unitName: String,
+        verb: String,
+        vault: SecureVault,
+    ): SshExecResult {
+        return executePrivileged(
+            server = server,
+            command = "systemctl $verb ${shellQuote(unitName)}",
+            category = AuditCategory.SERVICE,
+            actionTitle = "Service $verb: $unitName",
+            vault = vault,
+        )
     }
 
     suspend fun fetchProcesses(server: Server): List<ProcessInfo> {
@@ -541,9 +679,20 @@ class HomelabController(
         return TelemetryParsers.parseProcesses(res.stdout)
     }
 
-    suspend fun sendProcessSignal(server: Server, process: ProcessInfo, signal: ProcessSignal): SshExecResult {
-        val cmd = "kill -${signal.code} ${process.pid}"
-        return executeAuditedAction(server, AuditCategory.PROCESS, "Signal ${signal.signalName} PID ${process.pid}", cmd)
+    /** Signals a process (pid parsed as Int from the remote ps output); foreign-PID signals need root. */
+    suspend fun sendProcessSignal(
+        server: Server,
+        process: ProcessInfo,
+        signal: ProcessSignal,
+        vault: SecureVault,
+    ): SshExecResult {
+        return executePrivileged(
+            server = server,
+            command = "kill -${signal.code} ${process.pid}",
+            category = AuditCategory.PROCESS,
+            actionTitle = "Signal ${signal.signalName} PID ${process.pid}",
+            vault = vault,
+        )
     }
 
     suspend fun fetchNetworkDetails(server: Server): Pair<List<NetworkInterfaceInfo>, List<NetworkPortInfo>> {
@@ -564,8 +713,13 @@ class HomelabController(
      * Enforces Safe Read-Only Mode, records the real duration and outcome (a failed or
      * timed-out save is audited as such), and rethrows so callers can surface the failure.
      * The transport aborts without writing when the `.bak` snapshot itself fails.
+     *
+     * When the SFTP write is refused with permission denied and [vault] is supplied, the
+     * save retries through [privilegedSave] (temp upload + `cp -p` backup + `install` that
+     * preserves mode/owner/group). Without a vault the permission failure is recorded and
+     * rethrown unchanged.
      */
-    suspend fun saveFileWithBackup(server: Server, remotePath: String, newContent: String) {
+    suspend fun saveFileWithBackup(server: Server, remotePath: String, newContent: String, vault: SecureVault? = null) {
         if (repository.preferences.first().safeReadOnlyMode) {
             val reason = "Blocked: Safe Read-Only Mode is active"
             repository.recordAudit(
@@ -603,6 +757,13 @@ class HomelabController(
                     "Updated ${newContent.length} bytes (new file, no prior content to back up)."
                 },
             )
+        } catch (denied: FilePermissionDeniedException) {
+            if (vault == null) {
+                recordFileSaveFailure(server, remotePath, started, AuditOutcome.FAILED, denied.message)
+                throw denied
+            }
+            privilegedSave(server, remotePath, newContent, vault, started, denied)
+            return
         } catch (timeoutEx: TimeoutCancellationException) {
             recordFileSaveFailure(server, remotePath, started, AuditOutcome.TIMEOUT, timeoutEx.message)
             throw timeoutEx
@@ -612,6 +773,62 @@ class HomelabController(
         } catch (t: Throwable) {
             recordFileSaveFailure(server, remotePath, started, AuditOutcome.FAILED, t.message)
             throw t
+        }
+    }
+
+    /**
+     * Permission-denied save retry: upload the payload to a `/tmp` staging path, then run
+     * `cp -p <path> <path>.bak && install -m <mode> -o <owner> -g <group> <tmp> <path> &&
+     * rm -f <tmp>` through [executePrivileged]. `cp -p` preserves the original mode, owner
+     * and group on the backup, and the `&&` chain keeps the Phase 1B `.bak` semantics — a
+     * failed backup aborts before anything is replaced. The audit ledger entry is the one
+     * [executePrivileged] writes (real command, real outcome); only the pre-command abort
+     * below records separately.
+     */
+    private suspend fun privilegedSave(
+        server: Server,
+        remotePath: String,
+        newContent: String,
+        vault: SecureVault,
+        startedEpochMs: Long,
+        cause: FilePermissionDeniedException,
+    ) {
+        val tempPath = "/tmp/grack-save-${randomHex(8)}.tmp"
+        val stat = runCatching {
+            sshClient.execute(
+                server,
+                latestServers,
+                "stat -c '%a %U %G' -- ${shellQuote(remotePath)}",
+                FILE_STAT_TIMEOUT_MS,
+            )
+        }.getOrNull()
+        val attrs = stat?.stdout?.trim()
+            ?.split(WHITESPACE_REGEX)
+            ?.takeIf { it.size == 3 && it[0].matches(FILE_MODE_REGEX) }
+        if (attrs == null) {
+            val reason = "Privileged save aborted: could not stat $remotePath " +
+                "(${stat?.stderr?.ifBlank { null } ?: cause.message})"
+            recordFileSaveFailure(server, remotePath, startedEpochMs, AuditOutcome.FAILED, reason)
+            throw IllegalStateException(reason, cause)
+        }
+        val (mode, owner, group) = attrs
+        sshClient.uploadFileText(server, latestServers, tempPath, newContent)
+        val installCommand = "cp -p ${shellQuote(remotePath)} ${shellQuote("$remotePath.bak")} && " +
+            "install -m ${shellQuote(mode)} -o ${shellQuote(owner)} -g ${shellQuote(group)} " +
+            "${shellQuote(tempPath)} ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}"
+        val result = executePrivileged(
+            server = server,
+            command = installCommand,
+            category = AuditCategory.CONFIG,
+            actionTitle = "Saved SFTP File: $remotePath",
+            vault = vault,
+        )
+        if (result.exitCode != 0) {
+            runCatching { sshClient.execute(server, latestServers, "rm -f ${shellQuote(tempPath)}", FILE_STAT_TIMEOUT_MS) }
+            throw IllegalStateException(
+                "Privileged install failed for $remotePath (exit ${result.exitCode}): " +
+                    result.stderr.ifBlank { result.stdout }.ifBlank { "no output" },
+            )
         }
     }
 
@@ -717,21 +934,40 @@ class HomelabController(
         return sshClient.openShell(server, latestServers, cols, rows)
     }
 
-    suspend fun rebootOrShutdown(server: Server, reboot: Boolean): SshExecResult {
-        val verb = if (reboot) "reboot" else "shutdown -h now"
-        val cmd = "sudo -n $verb || $verb"
-        return executeAuditedAction(
+    /** Reboot / shutdown, routed through [executePrivileged] so stored sudo credentials work. */
+    suspend fun rebootOrShutdown(server: Server, reboot: Boolean, vault: SecureVault): SshExecResult {
+        val command = if (reboot) "reboot" else "shutdown -h now"
+        return executePrivileged(
             server = server,
+            command = command,
             category = AuditCategory.POWER,
             actionTitle = if (reboot) "System Reboot" else "System Shutdown",
-            command = cmd,
+            vault = vault,
         )
+    }
+
+    /**
+     * Last [tail] journal lines for a systemd unit. journalctl often requires root or the
+     * adm group, so the read goes through [executePrivileged] like every other privileged verb.
+     */
+    suspend fun fetchJournalLogs(server: Server, unitName: String, vault: SecureVault, tail: Int = 80): String {
+        val res = executePrivileged(
+            server = server,
+            command = "journalctl -u ${shellQuote(unitName)} -n $tail --no-pager",
+            category = AuditCategory.SERVICE,
+            actionTitle = "Inspect journalctl $unitName",
+            vault = vault,
+        )
+        return res.stdout.ifBlank { res.stderr }
     }
 
     /** Cancels the controller's background loops (pollers, idle pruning) at teardown. */
     fun stop() {
         controllerJob.cancel()
     }
+
+    private fun randomHex(byteCount: Int): String =
+        Random.nextBytes(byteCount).joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
 
     companion object {
         /** Default budget for audited actions. */
@@ -754,5 +990,22 @@ class HomelabController(
 
         /** SERVER_OFFLINE rules fire after this many consecutive failed polls. */
         const val OFFLINE_ALERT_FAILURE_THRESHOLD: Int = 3
+
+        /** Passwordless-sudo probe command: no password is read, no prompt is printed. */
+        const val SUDO_PROBE_COMMAND: String = "sudo -n true"
+
+        /** Budget for the `sudo -n true` probe. */
+        const val SUDO_PROBE_TIMEOUT_MS: Long = 5_000L
+
+        /** A successful passwordless-sudo probe stays trusted for 10 minutes per server. */
+        const val SUDO_PROBE_TTL_MS: Long = 10 * 60_000L
+
+        /** Budget for the `stat` probe and the temp-file cleanup of the privileged save. */
+        const val FILE_STAT_TIMEOUT_MS: Long = 5_000L
+
+        private val WHITESPACE_REGEX = Regex("\\s+")
+
+        /** `stat -c %a` output: 1-4 octal digits. */
+        private val FILE_MODE_REGEX = Regex("[0-7]{1,4}")
     }
 }

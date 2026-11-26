@@ -40,6 +40,8 @@ kotlin {
             implementation(libs.robolectric)
             implementation(libs.androidx.testExt.junit)
             implementation(libs.androidx.sqlite.bundled)
+            implementation(libs.androidx.room3.testing)
+            implementation(libs.androidx.room3.migration)
         }
     }
 }
@@ -52,4 +54,12 @@ dependencies {
     add("kspAndroid", libs.androidx.room3.compiler)
     add("kspIosArm64", libs.androidx.room3.compiler)
     add("kspIosSimulatorArm64", libs.androidx.room3.compiler)
+}
+
+// Same worker-heap headroom as core/ssh: the migration and backup tests boot Robolectric
+// and the real Tink vault per test.
+tasks.matching { it.name == "testAndroidHostTest" }.configureEach {
+    if (this is org.gradle.process.JavaForkOptions) {
+        maxHeapSize = "2g"
+    }
 }

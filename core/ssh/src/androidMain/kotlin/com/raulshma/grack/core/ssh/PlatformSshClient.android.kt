@@ -437,12 +437,39 @@ actual class PlatformSshClient actual constructor(
         } catch (missing: com.jcraft.jsch.SftpException) {
             if (missing.id == ChannelSftp.SSH_FX_NO_SUCH_FILE) {
                 false // new file: nothing to back up yet
+            } else if (missing.id == ChannelSftp.SSH_FX_PERMISSION_DENIED) {
+                // The prior content (or its .bak) is not writable by the login user: the
+                // caller can retry through the privileged save path.
+                throw FilePermissionDeniedException(
+                    "Permission denied reading or backing up $remotePath (sudo escalation available)",
+                )
             } else {
                 throw IllegalStateException("Backup write failed for $remotePath; save aborted so the original is preserved", missing)
             }
         }
-        sftp.put(ByteArrayInputStream(payload), remotePath, ChannelSftp.OVERWRITE)
+        try {
+            sftp.put(ByteArrayInputStream(payload), remotePath, ChannelSftp.OVERWRITE)
+        } catch (denied: com.jcraft.jsch.SftpException) {
+            if (denied.id == ChannelSftp.SSH_FX_PERMISSION_DENIED) {
+                throw FilePermissionDeniedException(
+                    "Permission denied writing $remotePath (sudo escalation available)",
+                )
+            }
+            throw denied
+        }
         backupCaptured
+    }
+
+    override suspend fun uploadFileText(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        content: String,
+        timeoutMs: Long,
+    ) = runSftpOperation(server, allServers, timeoutMs) { sftp ->
+        val payload = content.encodeToByteArray()
+        TextFileGuard.validate(payload, remotePath)
+        sftp.put(ByteArrayInputStream(payload), remotePath, ChannelSftp.OVERWRITE)
     }
 
     override suspend fun deployPublicKey(

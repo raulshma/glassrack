@@ -15,7 +15,9 @@ import com.raulshma.grack.core.model.RemoteFileEntry
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.SshKeyRecord
+import com.raulshma.grack.core.model.SudoAuth
 import com.raulshma.grack.core.model.UserPreferences
+import com.raulshma.grack.core.model.sudoSecretVaultId
 import com.raulshma.grack.core.security.BiometricGate
 import com.raulshma.grack.core.security.SecureVault
 import com.raulshma.grack.core.ssh.HomelabController
@@ -42,6 +44,20 @@ data class ServersUiState(
     val dismissedHostKeyChallenge: HostKeyChallenge? = null,
     val testStatusMessage: String? = null,
     val isTestingConnection: Boolean = false,
+    /** Node ids that have a dedicated sudo password stored at `srv_sudo_<serverId>`. */
+    val sudoSecretServerIds: Set<String> = emptySet(),
+)
+
+/**
+ * Credential edits collected by [AddEditServerSheet]. Passwords are persisted through the
+ * vault only on Save (mirroring the Phase 1B login-credential semantics) and are never
+ * embedded in a [Server] — the model carries references and modes only.
+ */
+data class ServerSecretEdits(
+    val loginPassword: String? = null,
+    val clearLoginPassword: Boolean = false,
+    val sudoPassword: String? = null,
+    val clearSudoPassword: Boolean = false,
 )
 
 data class NetworkAndFilesState(
@@ -71,6 +87,9 @@ class ServersViewModel(
     /** Servers whose host-key challenge the user explicitly blocked ("Block" button). */
     private val _dismissedHostKeyServerIds = MutableStateFlow<Set<String>>(emptySet())
 
+    /** Node ids with a stored dedicated sudo password (drives the sheet's clear affordance). */
+    private val _sudoSecretServerIds = MutableStateFlow<Set<String>>(emptySet())
+
     private val _netFiles = MutableStateFlow(NetworkAndFilesState())
     val netFilesState: StateFlow<NetworkAndFilesState> = _netFiles.asStateFlow()
 
@@ -86,6 +105,7 @@ class ServersViewModel(
         _testMsg,
         _testing,
         _dismissedHostKeyServerIds,
+        _sudoSecretServerIds,
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         val runtimeMap = arr[0] as Map<String, ServerRuntimeState>
@@ -102,6 +122,7 @@ class ServersViewModel(
         val testMsg = arr[8] as String?
         val testing = arr[9] as Boolean
         val dismissedIds = arr[10] as Set<String>
+        val sudoSecretIds = arr[11] as Set<String>
 
         val all = runtimeMap.values.sortedBy { it.server.sortOrder }
         val visibleChallenge = (challenge ?: all.firstNotNullOfOrNull { it.pendingHostKeyChallenge })
@@ -121,23 +142,50 @@ class ServersViewModel(
             dismissedHostKeyChallenge = dismissedChallenge,
             testStatusMessage = testMsg,
             isTestingConnection = testing,
+            sudoSecretServerIds = sudoSecretIds,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ServersUiState())
+
+    init {
+        // Refresh which nodes hold a dedicated sudo password whenever the inventory changes
+        // (save, import, delete) so the edit sheet's set/change/clear UI stays truthful.
+        viewModelScope.launch {
+            repository.servers.collect { servers ->
+                val ids = servers.map { it.id }.toSet()
+                val stored = ids.filter { id ->
+                    runCatching { vault.containsSecret(sudoSecretVaultId(id)) }.getOrDefault(false)
+                }.toSet()
+                _sudoSecretServerIds.value = stored
+            }
+        }
+    }
 
     fun setSearch(q: String) { _search.value = q }
     fun setSelectedTag(t: String) { _selectedTag.value = t }
 
-    fun saveServer(draft: Server, passwordPlain: String?, clearSavedPassword: Boolean = false) {
+    fun saveServer(draft: Server, secrets: ServerSecretEdits = ServerSecretEdits()) {
         viewModelScope.launch {
             var updated = draft
             val vaultId = draft.credentialVaultId ?: "srv_pw_${draft.id}"
-            if (draft.authType == AuthType.PASSWORD && clearSavedPassword) {
+            if (draft.authType == AuthType.PASSWORD && secrets.clearLoginPassword) {
                 vault.deleteSecret(vaultId)
                 updated = draft.copy(credentialVaultId = null)
-            } else if (draft.authType == AuthType.PASSWORD && !passwordPlain.isNullOrEmpty()) {
+            } else if (draft.authType == AuthType.PASSWORD && !secrets.loginPassword.isNullOrEmpty()) {
                 // Set (new node) or change (rotate): the Save action is what persists it.
-                vault.putSecret(vaultId, passwordPlain)
+                vault.putSecret(vaultId, secrets.loginPassword)
                 updated = draft.copy(credentialVaultId = vaultId)
+            }
+            // Dedicated sudo password lives at srv_sudo_<id>; there is no column — the
+            // secret's existence is the state. Clearing (or leaving the mode) removes it
+            // so no stale credential outlives its selection.
+            val sudoVaultId = sudoSecretVaultId(draft.id)
+            when {
+                draft.sudoAuth == SudoAuth.SEPARATE_PASSWORD && secrets.clearSudoPassword ->
+                    vault.deleteSecret(sudoVaultId)
+                draft.sudoAuth == SudoAuth.SEPARATE_PASSWORD && !secrets.sudoPassword.isNullOrEmpty() ->
+                    vault.putSecret(sudoVaultId, secrets.sudoPassword)
+                draft.sudoAuth != SudoAuth.SEPARATE_PASSWORD ->
+                    vault.deleteSecret(sudoVaultId)
             }
             repository.upsertServer(updated)
             // The node was edited: a previously blocked host-key challenge is relevant again.
@@ -262,7 +310,7 @@ class ServersViewModel(
                     return@launch
                 }
             }
-            val res = controller.rebootOrShutdown(server, reboot)
+            val res = controller.rebootOrShutdown(server, reboot, vault)
             _testMsg.value = "Power command sent (exit ${res.exitCode})"
         }
     }
@@ -310,7 +358,9 @@ class ServersViewModel(
             }
         viewModelScope.launch {
             runCatching {
-                controller.saveFileWithBackup(server, path, draft)
+                // Vault supplied so a permission-denied SFTP write escalates to the
+                // privileged save (temp upload + cp -p backup + install) when possible.
+                controller.saveFileWithBackup(server, path, draft, vault)
                 _netFiles.update {
                     it.copy(
                         openedFileOriginal = draft,

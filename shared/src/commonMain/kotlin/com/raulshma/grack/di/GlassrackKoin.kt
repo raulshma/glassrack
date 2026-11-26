@@ -35,7 +35,7 @@ val glassrackCommonModule = module {
     viewModel { OverviewViewModel(get(), get()) }
     viewModel { ServersViewModel(get(), get(), get(), get()) }
     viewModel { ContainersViewModel(get(), get(), get()) }
-    viewModel { ProcessesViewModel(get(), get(), get()) }
+    viewModel { ProcessesViewModel(get(), get(), get(), get()) }
     viewModel { TerminalViewModel(get(), get()) }
     viewModel { AuditViewModel(get()) }
     viewModel { SettingsViewModel(get(), get(), get()) }

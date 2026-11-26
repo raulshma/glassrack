@@ -14,6 +14,7 @@ import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.isDestructiveServiceVerb
 import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.core.security.BiometricGate
+import com.raulshma.grack.core.security.SecureVault
 import com.raulshma.grack.core.ssh.HomelabController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -43,6 +44,7 @@ class ProcessesViewModel(
     private val controller: HomelabController,
     private val repository: GlassrackRepository,
     private val biometricGate: BiometricGate,
+    private val vault: SecureVault,
 ) : ViewModel() {
 
     val preferences: StateFlow<UserPreferences> = repository.preferences
@@ -126,7 +128,7 @@ class ProcessesViewModel(
 
     private fun executeSignal(server: Server, proc: ProcessInfo, signal: ProcessSignal) {
         viewModelScope.launch {
-            val res = controller.sendProcessSignal(server, proc, signal)
+            val res = controller.sendProcessSignal(server, proc, signal, vault)
             _uiState.update { it.copy(message = res.stdout.ifBlank { res.stderr }) }
             loadProcesses(server)
         }
@@ -157,7 +159,7 @@ class ProcessesViewModel(
 
     private fun executeServiceVerb(server: Server, unit: SystemdUnit, verb: String) {
         viewModelScope.launch {
-            val res = controller.performSystemdAction(server, unit.name, verb)
+            val res = controller.performSystemdAction(server, unit.name, verb, vault)
             _uiState.update { it.copy(message = res.stdout.ifBlank { "Exit ${res.exitCode}" }) }
             loadServicesAndCron(server)
         }
@@ -166,13 +168,12 @@ class ProcessesViewModel(
     fun openJournal(server: Server, unit: SystemdUnit) {
         viewModelScope.launch {
             _uiState.update { it.copy(journalUnit = unit, journalLogs = "Loading journalctl for ${unit.name}...") }
-            val res = controller.executeAuditedAction(
-                server = server,
-                category = AuditCategory.SERVICE,
-                actionTitle = "Inspect journalctl ${unit.name}",
-                command = "journalctl -u '${unit.name}' -n 80 --no-pager",
-            )
-            _uiState.update { it.copy(journalLogs = res.stdout.ifBlank { res.stderr }) }
+            runCatching {
+                val logs = controller.fetchJournalLogs(server, unit.name, vault)
+                _uiState.update { it.copy(journalLogs = logs) }
+            }.onFailure { err ->
+                _uiState.update { it.copy(journalLogs = "journalctl failed: ${err.message}") }
+            }
         }
     }
 

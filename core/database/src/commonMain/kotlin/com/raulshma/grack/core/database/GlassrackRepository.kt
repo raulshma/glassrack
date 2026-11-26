@@ -22,10 +22,13 @@ import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.Snippet
 import com.raulshma.grack.core.model.SshKeyAlgorithm
 import com.raulshma.grack.core.model.SshKeyRecord
+import com.raulshma.grack.core.model.SudoAuth
 import com.raulshma.grack.core.model.TileType
 import com.raulshma.grack.core.model.TriggerSource
+import com.raulshma.grack.core.model.UpdatePolicy
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.currentTimeEpochMs
+import com.raulshma.grack.core.model.sudoSecretVaultId
 import com.raulshma.grack.core.security.CommandSanitizer
 import com.raulshma.grack.core.security.SecureVault
 import kotlinx.coroutines.flow.Flow
@@ -134,6 +137,8 @@ class GlassrackRepository(
         if (existing?.credentialVaultId != null) {
             vault.deleteSecret(existing.credentialVaultId)
         }
+        // Cascade: a dedicated sudo password must not outlive its node either.
+        vault.deleteSecret(sudoSecretVaultId(serverId))
         // Cascade: the node's port-forward tunnels must not outlive it.
         db.tunnelDao().deleteForServer(serverId)
         db.serverDao().deleteById(serverId)
@@ -506,6 +511,11 @@ class GlassrackRepository(
         sortOrder = sortOrder,
         capabilities = runCatching { json.decodeFromString<OsCapabilities>(capabilitiesJson) }.getOrDefault(OsCapabilities()),
         customProbes = runCatching { json.decodeFromString<List<CustomProbeDefinition>>(customProbesJson) }.getOrDefault(emptyList()),
+        sudoAuth = runCatching { SudoAuth.valueOf(sudoAuth) }.getOrDefault(SudoAuth.NONE),
+        updatePolicy = runCatching { UpdatePolicy.valueOf(updatePolicy) }.getOrDefault(UpdatePolicy.MANUAL),
+        updateOs = updateOs,
+        updateContainers = updateContainers,
+        updateReportJson = updateReportJson,
     )
 
     private fun Server.toEntity(): ServerEntity = ServerEntity(
@@ -532,6 +542,11 @@ class GlassrackRepository(
         isSimulated = false,
         capabilitiesJson = json.encodeToString(capabilities),
         customProbesJson = json.encodeToString(customProbes),
+        sudoAuth = sudoAuth.name,
+        updatePolicy = updatePolicy.name,
+        updateOs = updateOs,
+        updateContainers = updateContainers,
+        updateReportJson = updateReportJson,
     )
 
     private fun SshKeyEntity.toDomain(): SshKeyRecord = SshKeyRecord(
@@ -626,6 +641,12 @@ class GlassrackRepository(
         targetTags = runCatching { json.decodeFromString<List<String>>(targetTagsJson) }.getOrDefault(emptyList()),
         requiresConfirmation = requiresConfirmation,
         sortOrder = sortOrder,
+        scheduleSpec = scheduleSpec,
+        scheduleTargets = scheduleTargetsJson?.let { parsed ->
+            runCatching { json.decodeFromString<List<String>>(parsed) }.getOrNull()
+        },
+        lastRunEpochMs = lastRunEpochMs,
+        lastRunStatus = lastRunStatus,
     )
 
     private fun Snippet.toEntity(): SnippetEntity = SnippetEntity(
@@ -636,6 +657,10 @@ class GlassrackRepository(
         targetTagsJson = json.encodeToString(targetTags),
         requiresConfirmation = requiresConfirmation,
         sortOrder = sortOrder,
+        scheduleSpec = scheduleSpec,
+        scheduleTargetsJson = scheduleTargets?.let { json.encodeToString(it) },
+        lastRunEpochMs = lastRunEpochMs,
+        lastRunStatus = lastRunStatus,
     )
 
     private fun AlertRuleEntity.toDomain(): AlertRule = AlertRule(

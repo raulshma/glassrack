@@ -90,6 +90,9 @@ interface SshSessionClient {
      * fails, nothing is written and an exception is thrown, so the original file is never
      * lost. Payloads refused by [TextFileGuard] (over 1 MiB or containing NUL bytes) are
      * rejected before any byte reaches the host. Timeout semantics of [timeoutMs] apply.
+     *
+     * When the write is refused with `SSH_FX_PERMISSION_DENIED`, [FilePermissionDeniedException]
+     * is thrown so callers can fall back to the privileged save path (temp upload + `install`).
      */
     suspend fun writeFileTextWithBackup(
         server: Server,
@@ -98,6 +101,19 @@ interface SshSessionClient {
         newContent: String,
         timeoutMs: Long = 15_000L,
     ): Boolean
+
+    /**
+     * Uploads [content] to [remotePath] over SFTP without any backup semantics: the caller
+     * owns placement (used by the privileged save for its temp file). Payloads refused by
+     * [TextFileGuard] are rejected before any byte reaches the host.
+     */
+    suspend fun uploadFileText(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        content: String,
+        timeoutMs: Long = 15_000L,
+    )
 
     suspend fun deployPublicKey(
         server: Server,

@@ -42,14 +42,23 @@ internal class FakeSshSessionClient : SshSessionClient {
         val timeoutMs: Long,
     )
 
+    data class UploadRequest(
+        val server: Server,
+        val remotePath: String,
+        val content: String,
+        val timeoutMs: Long,
+    )
+
     val executeRequests = mutableListOf<ExecRequest>()
     val streamRequests = mutableListOf<StreamRequest>()
     val writeRequests = mutableListOf<WriteRequest>()
+    val uploadRequests = mutableListOf<UploadRequest>()
     val disconnectIdleCalls = mutableListOf<Long>()
 
     var executeHandler: suspend (ExecRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
     var streamHandler: suspend (StreamRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
     var writeFileHandler: suspend (WriteRequest) -> Boolean = { true }
+    var uploadFileHandler: suspend (UploadRequest) -> Unit = { }
     var readFileHandler: suspend (server: Server, remotePath: String) -> String = { _, _ -> "" }
     var testConnectionHandler: suspend (server: Server, transientPassword: String?) -> Result<HostKeyChallenge?> = { _, _ -> Result.success(null) }
 
@@ -118,6 +127,18 @@ internal class FakeSshSessionClient : SshSessionClient {
         return writeFileHandler(request)
     }
 
+    override suspend fun uploadFileText(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        content: String,
+        timeoutMs: Long,
+    ) {
+        val request = UploadRequest(server, remotePath, content, timeoutMs)
+        uploadRequests += request
+        uploadFileHandler(request)
+    }
+
     override suspend fun deployPublicKey(
         server: Server,
         allServers: List<Server>,
@@ -160,13 +181,16 @@ internal class ControllerHarness(context: Context, testScope: TestScope) {
         .absolutePath
         .toPath()
 
+    /** Real vault (Tink file-backed under Robolectric) so sudo secrets can be staged in tests. */
+    val vault: SecureVault = SecureVault(context)
+
     val db: GlassrackDatabase = Room.inMemoryDatabaseBuilder(context, GlassrackDatabase::class.java)
         .setQueryCoroutineContext(queryContext)
         .build()
 
     val repository: GlassrackRepository = GlassrackRepository(
         db = db,
-        vault = SecureVault(context), // tests only exercise sha256Hex; secrets stay untouched
+        vault = vault, // real Tink-backed vault; tests store sudo secrets through it
         preferencesStore = PreferencesStore(
             PreferenceDataStoreFactory.createWithPath(produceFile = { prefsPath }),
         ),

@@ -45,3 +45,11 @@ kotlin {
         }
     }
 }
+
+// Robolectric sandboxes plus the Tink-backed vault used by the controller tests exhaust the
+// default 512m worker heap partway through the suite and the worker ends up thrashing GC.
+tasks.matching { it.name == "testAndroidHostTest" }.configureEach {
+    if (this is org.gradle.process.JavaForkOptions) {
+        maxHeapSize = "2g"
+    }
+}

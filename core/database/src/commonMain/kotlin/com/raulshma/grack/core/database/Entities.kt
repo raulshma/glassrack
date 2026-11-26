@@ -1,5 +1,6 @@
 package com.raulshma.grack.core.database
 
+import androidx.room3.ColumnInfo
 import androidx.room3.Entity
 import androidx.room3.Index
 import androidx.room3.PrimaryKey
@@ -29,6 +30,13 @@ data class ServerEntity(
     val isSimulated: Boolean,
     val capabilitiesJson: String,
     val customProbesJson: String,
+    // Columns added in schema v2 (MIGRATION_1_2). Each @ColumnInfo defaultValue must stay
+    // identical to the ALTER TABLE default so Room's migrated-schema validation passes.
+    @ColumnInfo(defaultValue = "NONE") val sudoAuth: String,
+    @ColumnInfo(defaultValue = "MANUAL") val updatePolicy: String,
+    @ColumnInfo(defaultValue = "0") val updateOs: Boolean,
+    @ColumnInfo(defaultValue = "1") val updateContainers: Boolean,
+    val updateReportJson: String?,
 )
 
 @Entity(tableName = "ssh_keys")
@@ -118,6 +126,11 @@ data class SnippetEntity(
     val targetTagsJson: String,
     val requiresConfirmation: Boolean,
     val sortOrder: Int,
+    // Columns added in schema v2 (MIGRATION_1_2); all nullable, so no defaults are required.
+    val scheduleSpec: String?,
+    val scheduleTargetsJson: String?,
+    val lastRunEpochMs: Long?,
+    val lastRunStatus: String?,
 )
 
 @Entity(tableName = "alert_rules")

@@ -138,6 +138,13 @@ data class Snippet(
     val targetTags: List<String> = emptyList(),
     val requiresConfirmation: Boolean = false,
     val sortOrder: Int = 0,
+    /** Schedule spec (Phase 4 WorkManager editor); null when the snippet never runs on a schedule. */
+    val scheduleSpec: String? = null,
+    /** Target tags for scheduled runs; null inherits the broadcast targetTags semantics. */
+    val scheduleTargets: List<String>? = null,
+    val lastRunEpochMs: Long? = null,
+    /** Outcome label of the last scheduled run ("SUCCEEDED", "FAILED", ...); written by the worker. */
+    val lastRunStatus: String? = null,
 )
 
 /**

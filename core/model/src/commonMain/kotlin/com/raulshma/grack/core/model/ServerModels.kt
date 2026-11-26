@@ -12,6 +12,30 @@ enum class AuthType {
     INTERACTIVE,
 }
 
+/** How sudo obtains privileges on a node; the secret itself never leaves the vault. */
+@Serializable
+enum class SudoAuth {
+    /** No sudo credential stored; privileged commands rely on root login or passwordless sudo. */
+    NONE,
+    /** Sudo reuses the node's SSH login password (read from the login vault id at use time). */
+    LOGIN_PASSWORD,
+    /** Sudo has its own password stored at vault id `srv_sudo_<serverId>`. */
+    SEPARATE_PASSWORD,
+}
+
+/** Whether OS/container updates apply only on explicit request or unattended (Phase 3B). */
+@Serializable
+enum class UpdatePolicy {
+    MANUAL,
+    AUTO,
+}
+
+/**
+ * Vault id under which a node's dedicated sudo password is stored. The backup holds server
+ * references only, so there is nothing to remap on import; deleting a node deletes the secret.
+ */
+fun sudoSecretVaultId(serverId: String): String = "srv_sudo_$serverId"
+
 @Serializable
 enum class ServerHealth {
     ONLINE,
@@ -138,6 +162,12 @@ data class Server(
     val sortOrder: Int = 0,
     val capabilities: OsCapabilities = OsCapabilities(),
     val customProbes: List<CustomProbeDefinition> = emptyList(),
+    val sudoAuth: SudoAuth = SudoAuth.NONE,
+    val updatePolicy: UpdatePolicy = UpdatePolicy.MANUAL,
+    val updateOs: Boolean = false,
+    val updateContainers: Boolean = true,
+    /** Last Phase-3B update scan report, or null when the node was never scanned. */
+    val updateReportJson: String? = null,
 )
 
 @Immutable

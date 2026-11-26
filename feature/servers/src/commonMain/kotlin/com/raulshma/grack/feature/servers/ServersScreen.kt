@@ -111,6 +111,7 @@ import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.SshKeyRecord
+import com.raulshma.grack.core.model.SudoAuth
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.feature.containers.ContainersPane
@@ -267,11 +268,12 @@ fun ServersScreen(
             isNew = isNewWizard,
             allServers = state.servers.map { it.server },
             sshKeys = state.sshKeys,
+            sudoSecretServerIds = state.sudoSecretServerIds,
             testStatus = state.testStatusMessage,
             isTesting = state.isTestingConnection,
             onTest = { srv, pw -> viewModel.testConnection(srv, pw, trustFirst = false) },
-            onSave = { srv, pw, clearSavedPassword ->
-                viewModel.saveServer(srv, pw, clearSavedPassword)
+            onSave = { srv, secrets ->
+                viewModel.saveServer(srv, secrets)
                 showAddEditWizard = null
             },
             onDismiss = { showAddEditWizard = null },
@@ -1933,10 +1935,11 @@ private fun AddEditServerSheet(
     isNew: Boolean,
     allServers: List<Server>,
     sshKeys: List<SshKeyRecord>,
+    sudoSecretServerIds: Set<String>,
     testStatus: String?,
     isTesting: Boolean,
     onTest: (Server, String?) -> Unit,
-    onSave: (Server, String?, Boolean) -> Unit,
+    onSave: (Server, ServerSecretEdits) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(initial.name) }
@@ -1952,12 +1955,20 @@ private fun AddEditServerSheet(
     var selectedKeyId by remember { mutableStateOf(initial.sshKeyId ?: sshKeys.firstOrNull()?.id) }
     var password by remember { mutableStateOf("") }
     var clearSavedPassword by remember { mutableStateOf(false) }
+    var sudoAuth by remember { mutableStateOf(initial.sudoAuth) }
+    var sudoPassword by remember { mutableStateOf("") }
+    var clearSudoPassword by remember { mutableStateOf(false) }
     var macAddress by remember { mutableStateOf(initial.macAddress) }
     var jumpHostId by remember { mutableStateOf(initial.jumpHostServerId) }
     var pollInterval by remember { mutableStateOf(initial.pollIntervalSec.toString()) }
     var notes by remember { mutableStateOf(initial.notes) }
 
     val hasStoredPassword = !isNew && initial.authType == AuthType.PASSWORD && initial.credentialVaultId != null
+    // Dedicated sudo secret existence comes from the vault-backed set, since the model
+    // intentionally carries no column for it (the secret's existence is the state).
+    val hasStoredSudoPassword = !isNew &&
+        initial.sudoAuth == SudoAuth.SEPARATE_PASSWORD &&
+        initial.id in sudoSecretServerIds
 
     fun buildServer(): Server = initial.copy(
         name = name.trim().ifBlank { primaryHost.trim() },
@@ -1974,6 +1985,7 @@ private fun AddEditServerSheet(
         // A cleared field keeps the node's current interval (or the global default for new nodes).
         pollIntervalSec = (pollInterval.toIntOrNull() ?: initial.pollIntervalSec).coerceIn(2, 300),
         notes = notes.trim(),
+        sudoAuth = sudoAuth,
     )
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -2156,6 +2168,90 @@ private fun AddEditServerSheet(
 
             ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Text(
+                    text = "Privilege Escalation",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(10.dp))
+                ExpressiveSegmentedPillGroup(
+                    options = listOf(SudoAuth.NONE, SudoAuth.LOGIN_PASSWORD, SudoAuth.SEPARATE_PASSWORD),
+                    selected = sudoAuth,
+                    onSelected = { selected ->
+                        sudoAuth = selected
+                        if (selected != SudoAuth.SEPARATE_PASSWORD) {
+                            sudoPassword = ""
+                            clearSudoPassword = false
+                        }
+                    },
+                    label = {
+                        when (it) {
+                            SudoAuth.NONE -> "None"
+                            SudoAuth.LOGIN_PASSWORD -> "Login Password"
+                            SudoAuth.SEPARATE_PASSWORD -> "Separate"
+                        }
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                when (sudoAuth) {
+                    SudoAuth.NONE -> Text(
+                        text = "Root actions rely on a root login or passwordless sudo; " +
+                            "without them they run through the plain fallback.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SudoAuth.LOGIN_PASSWORD -> Text(
+                        text = "sudo reuses this node's SSH login password (read from the vault " +
+                            "when a privileged command runs)." +
+                            if (authType != AuthType.PASSWORD) {
+                                " Requires password authentication — this node currently logs in with a key."
+                            } else {
+                                ""
+                            },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SudoAuth.SEPARATE_PASSWORD -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = sudoPassword,
+                            onValueChange = {
+                                sudoPassword = it
+                                if (it.isNotEmpty()) clearSudoPassword = false
+                            },
+                            label = {
+                                Text(
+                                    if (hasStoredSudoPassword) {
+                                        "Sudo Password (leave blank to keep stored)"
+                                    } else {
+                                        "Sudo Password (stored in Tink Keystore Vault)"
+                                    },
+                                )
+                            },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (hasStoredSudoPassword) {
+                            TextButton(
+                                onClick = {
+                                    clearSudoPassword = !clearSudoPassword
+                                    if (clearSudoPassword) sudoPassword = ""
+                                },
+                            ) {
+                                Text(
+                                    if (clearSudoPassword) {
+                                        "Stored sudo password will be cleared on save — undo"
+                                    } else {
+                                        "Clear stored sudo password"
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Text(
                     text = "Hardware & Polling",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
@@ -2292,8 +2388,12 @@ private fun AddEditServerSheet(
                     onClick = {
                         onSave(
                             buildServer(),
-                            password.takeIf { it.isNotEmpty() },
-                            clearSavedPassword,
+                            ServerSecretEdits(
+                                loginPassword = password.takeIf { it.isNotEmpty() },
+                                clearLoginPassword = clearSavedPassword,
+                                sudoPassword = sudoPassword.takeIf { it.isNotEmpty() },
+                                clearSudoPassword = clearSudoPassword,
+                            ),
                         )
                     },
                     enabled = primaryHost.isNotBlank(),

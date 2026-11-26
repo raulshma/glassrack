@@ -60,6 +60,14 @@ actual class PlatformSshClient actual constructor(
         timeoutMs: Long,
     ): Boolean = false
 
+    override suspend fun uploadFileText(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        content: String,
+        timeoutMs: Long,
+    ) = Unit
+
     override suspend fun deployPublicKey(server: Server, allServers: List<Server>, publicKeyOpenSsh: String): SshExecResult =
         execute(server, allServers, "")
 
