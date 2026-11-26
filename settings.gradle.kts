@@ -1,4 +1,4 @@
-rootProject.name = "Glassrack"
+rootProject.name = "GRack"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {

@@ -10,7 +10,7 @@ kotlin {
     iosArm64()
     iosSimulatorArm64()
     android {
-        namespace = "com.example.glassrack.core.security"
+        namespace = "com.raulshma.grack.core.security"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions { jvmTarget = JvmTarget.JVM_11 }

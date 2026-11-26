@@ -12,7 +12,7 @@ kotlin {
     iosArm64()
     iosSimulatorArm64()
     android {
-        namespace = "com.example.glassrack.core.database"
+        namespace = "com.raulshma.grack.core.database"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions { jvmTarget = JvmTarget.JVM_11 }

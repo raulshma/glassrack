@@ -82,7 +82,7 @@ jobs:
               -alias glassrack-ephemeral \
               -storepass "$EPHEMERAL_PASS" \
               -keypass "$EPHEMERAL_PASS" \
-              -dname "CN=Glassrack CI, OU=Homelab, O=Glassrack, L=Local, ST=Local, C=US"
+              -dname "CN=GRack CI, OU=Homelab, O=GRack, L=Local, ST=Local, C=US"
             echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
             echo "ANDROID_KEYSTORE_PASSWORD=$EPHEMERAL_PASS" >> "$GITHUB_ENV"
             echo "ANDROID_KEY_ALIAS=glassrack-ephemeral" >> "$GITHUB_ENV"
@@ -113,8 +113,8 @@ jobs:
             echo "Missing release APK or AAB"
             exit 1
           fi
-          cp "$APK_SRC" "dist/glassrack-${VERSION}-arm64-v8a-release.apk"
-          cp "$AAB_SRC" "dist/glassrack-${VERSION}-arm64-v8a-release.aab"
+          cp "$APK_SRC" "dist/grack-${VERSION}-arm64-v8a-release.apk"
+          cp "$AAB_SRC" "dist/grack-${VERSION}-arm64-v8a-release.aab"
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -lh dist/
 
@@ -122,11 +122,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Glassrack ${{ steps.version.outputs.tag }}
+          name: GRack ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           draft: false
           prerelease: ${{ startsWith(steps.version.outputs.version_name, '0.') || contains(steps.version.outputs.version_name, '-') }}
           files: |
-            dist/glassrack-${{ steps.version.outputs.version_name }}-arm64-v8a-release.apk
-            dist/glassrack-${{ steps.version.outputs.version_name }}-arm64-v8a-release.aab
+            dist/grack-${{ steps.version.outputs.version_name }}-arm64-v8a-release.apk
+            dist/grack-${{ steps.version.outputs.version_name }}-arm64-v8a-release.aab
             dist/SHA256SUMS.txt

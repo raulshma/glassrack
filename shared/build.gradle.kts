@@ -19,7 +19,7 @@ kotlin {
         }
     }
     android {
-       namespace = "com.example.glassrack.shared"
+       namespace = "com.raulshma.grack.shared"
        compileSdk = libs.versions.android.compileSdk.get().toInt()
        minSdk = libs.versions.android.minSdk.get().toInt()
        compilerOptions {

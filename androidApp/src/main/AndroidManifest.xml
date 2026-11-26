@@ -37,7 +37,7 @@
             android:name=".service.GlassrackQuickTileService"
             android:exported="true"
             android:icon="@android:drawable/stat_sys_data_bluetooth"
-            android:label="Glassrack WoL"
+            android:label="GRack WoL"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -47,7 +47,7 @@
         <receiver
             android:name=".widget.ClusterPulseWidgetReceiver"
             android:exported="true"
-            android:label="Glassrack Cluster Pulse">
+            android:label="GRack Cluster Pulse">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -59,7 +59,7 @@
         <receiver
             android:name=".widget.ServerTelemetryWidgetReceiver"
             android:exported="true"
-            android:label="Glassrack Node Card">
+            android:label="GRack Node Card">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -71,7 +71,7 @@
         <receiver
             android:name=".widget.ContainerControlWidgetReceiver"
             android:exported="true"
-            android:label="Glassrack Container Deck">
+            android:label="GRack Container Deck">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -83,7 +83,7 @@
         <receiver
             android:name=".widget.ActionStripWidgetReceiver"
             android:exported="true"
-            android:label="Glassrack Quick Strip">
+            android:label="GRack Quick Strip">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>

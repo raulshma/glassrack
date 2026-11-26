@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		7D1CF80C91DCC7F6B8252CE2 /* Glassrack.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Glassrack.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7D1CF80C91DCC7F6B8252CE2 /* GRack.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GRack.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -59,7 +59,7 @@
 		762874E631DC035775785191 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				7D1CF80C91DCC7F6B8252CE2 /* Glassrack.app */,
+				7D1CF80C91DCC7F6B8252CE2 /* GRack.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -87,7 +87,7 @@
 			packageProductDependencies = (
 			);
 			productName = iosApp;
-			productReference = 7D1CF80C91DCC7F6B8252CE2 /* Glassrack.app */;
+			productReference = 7D1CF80C91DCC7F6B8252CE2 /* GRack.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */

@@ -37,7 +37,7 @@ dependencies {
 }
 
 android {
-    namespace = "com.example.glassrack"
+    namespace = "com.raulshma.grack"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     val resolvedVersionName = (providers.gradleProperty("versionName").orNull
@@ -58,7 +58,7 @@ android {
         ?: System.getenv("ANDROID_KEY_PASSWORD")
 
     defaultConfig {
-        applicationId = "com.example.glassrack"
+        applicationId = "com.raulshma.grack"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = resolvedVersionCode

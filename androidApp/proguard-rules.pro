@@ -15,16 +15,16 @@
 
 # Keep Kotlinx Serialization descriptors / serializers across KMP modules
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
--keep,includedescriptorclasses class com.example.glassrack.**$$serializer { *; }
--keepclassmembers class com.example.glassrack.** {
+-keep,includedescriptorclasses class com.raulshma.grack.**$$serializer { *; }
+-keepclassmembers class com.raulshma.grack.** {
     *** Companion;
 }
--keepclasseswithmembers class com.example.glassrack.** {
+-keepclasseswithmembers class com.raulshma.grack.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
 
 # Room 3 & Glance AppWidget receivers/workers instantiated by Android framework
--keep class com.example.glassrack.core.database.** { *; }
--keep class com.example.glassrack.widget.** { *; }
--keep class com.example.glassrack.worker.** { *; }
--keep class com.example.glassrack.service.** { *; }
+-keep class com.raulshma.grack.core.database.** { *; }
+-keep class com.raulshma.grack.widget.** { *; }
+-keep class com.raulshma.grack.worker.** { *; }
+-keep class com.raulshma.grack.service.** { *; }

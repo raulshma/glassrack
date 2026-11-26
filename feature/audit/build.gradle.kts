@@ -11,7 +11,7 @@ kotlin {
     iosArm64()
     iosSimulatorArm64()
     android {
-        namespace = "com.example.glassrack.feature.audit"
+        namespace = "com.raulshma.grack.feature.audit"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions { jvmTarget = JvmTarget.JVM_11 }
