@@ -12,6 +12,9 @@ import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
+import com.jcraft.jsch.SftpException
+import com.jcraft.jsch.SftpProgressMonitor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,6 +35,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayInputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -396,6 +401,46 @@ actual class PlatformSshClient actual constructor(
         }
     }
 
+    /**
+     * Runs a streaming binary transfer under an optional [timeoutMs] (`null` = untimed).
+     * Mirrors [runSftpOperation], and additionally handles plain caller cancellation: the
+     * channel is disconnected immediately so a blocking SFTP read unblocks instead of
+     * streaming on after the caller gave up.
+     */
+    private suspend fun <T> runSftpTransfer(
+        server: Server,
+        allServers: List<Server>,
+        timeoutMs: Long?,
+        operation: suspend (ChannelSftp) -> T,
+    ): T {
+        val channelRef = AtomicReference<ChannelSftp?>(null)
+        val body: suspend () -> T = {
+            coroutineScope {
+                val deferred = async(Dispatchers.IO) {
+                    val session = getOrConnect(server, allServers)
+                    val sftp = session.openChannel("sftp") as ChannelSftp
+                    channelRef.set(sftp)
+                    sftp.connect(5_000)
+                    try {
+                        operation(sftp)
+                    } finally {
+                        runCatching { sftp.disconnect() }
+                    }
+                }
+                try {
+                    deferred.await()
+                } catch (tce: TimeoutCancellationException) {
+                    runCatching { channelRef.get()?.disconnect() }
+                    throw tce
+                } catch (cancelled: CancellationException) {
+                    runCatching { channelRef.get()?.disconnect() }
+                    throw cancelled
+                }
+            }
+        }
+        return if (timeoutMs == null) body() else withTimeout(timeoutMs) { body() }
+    }
+
     override suspend fun listFiles(
         server: Server,
         allServers: List<Server>,
@@ -482,6 +527,51 @@ actual class PlatformSshClient actual constructor(
         val payload = content.encodeToByteArray()
         TextFileGuard.validate(payload, remotePath)
         sftp.put(ByteArrayInputStream(payload), remotePath, ChannelSftp.OVERWRITE)
+    }
+
+    override suspend fun downloadFile(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        destination: TransferSink,
+        timeoutMs: Long?,
+        onProgress: suspend (FileTransferProgress) -> Unit,
+    ): Long = runSftpTransfer(server, allServers, timeoutMs) { sftp ->
+        streamingDownload(JschSftpStreams(sftp), remotePath, destination, onProgress)
+    }
+
+    override suspend fun uploadFile(
+        server: Server,
+        allServers: List<Server>,
+        localSource: TransferSource,
+        remotePath: String,
+        totalBytes: Long,
+        timeoutMs: Long?,
+        onProgress: suspend (FileTransferProgress) -> Unit,
+    ): Long = runSftpTransfer(server, allServers, timeoutMs) { sftp ->
+        streamingUpload(JschSftpStreams(sftp), localSource, remotePath, totalBytes, onProgress)
+            .bytesTransferred
+    }
+
+    /** Thin [SftpStreams] adapter over a connected [ChannelSftp]. */
+    private class JschSftpStreams(private val sftp: ChannelSftp) : SftpStreams {
+        override fun openRead(remotePath: String, monitor: SftpProgressMonitor?): InputStream =
+            if (monitor == null) sftp.get(remotePath) else sftp.get(remotePath, monitor)
+
+        override fun openWrite(remotePath: String, monitor: SftpProgressMonitor?, sizeBytes: Long): OutputStream =
+            when {
+                monitor == null -> sftp.put(remotePath, ChannelSftp.OVERWRITE)
+                sizeBytes >= 0 -> sftp.put(remotePath, monitor, ChannelSftp.OVERWRITE, sizeBytes)
+                else -> sftp.put(remotePath, monitor, ChannelSftp.OVERWRITE)
+            }
+
+        override fun statSizeOrNull(remotePath: String): Long? = try {
+            sftp.lstat(remotePath).size
+        } catch (missing: SftpException) {
+            // Only a genuinely missing file counts as "new file, no backup"; any other stat
+            // failure must abort the upload rather than silently skip the backup.
+            if (missing.id == ChannelSftp.SSH_FX_NO_SUCH_FILE) null else throw missing
+        }
     }
 
     override suspend fun deployPublicKey(

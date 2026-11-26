@@ -68,6 +68,25 @@ actual class PlatformSshClient actual constructor(
         timeoutMs: Long,
     ) = Unit
 
+    override suspend fun downloadFile(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        destination: TransferSink,
+        timeoutMs: Long?,
+        onProgress: suspend (FileTransferProgress) -> Unit,
+    ): Long = throw UnsupportedOperationException("Binary SFTP transfers are not yet supported on iOS; use Android for live SSH transport.")
+
+    override suspend fun uploadFile(
+        server: Server,
+        allServers: List<Server>,
+        localSource: TransferSource,
+        remotePath: String,
+        totalBytes: Long,
+        timeoutMs: Long?,
+        onProgress: suspend (FileTransferProgress) -> Unit,
+    ): Long = throw UnsupportedOperationException("Binary SFTP transfers are not yet supported on iOS; use Android for live SSH transport.")
+
     override suspend fun deployPublicKey(server: Server, allServers: List<Server>, publicKeyOpenSsh: String): SshExecResult =
         execute(server, allServers, "")
 

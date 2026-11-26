@@ -35,6 +35,8 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DeveloperBoard
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lan
@@ -119,7 +121,9 @@ import com.raulshma.grack.core.model.AuthType
 import com.raulshma.grack.core.model.Formatters
 import com.raulshma.grack.core.model.HostKeyChallenge
 import com.raulshma.grack.core.model.PortForwardTunnel
+import com.raulshma.grack.core.model.RemoteFileEntry
 import com.raulshma.grack.core.model.Server
+import com.raulshma.grack.core.model.StorageUnit
 import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.SshKeyRecord
@@ -130,6 +134,10 @@ import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.feature.containers.ContainersPane
 import com.raulshma.grack.feature.processes.ProcessesPane
 import com.raulshma.grack.feature.processes.ServicesAndCronPane
+import io.github.vinceglb.filekit.dialogs.FileKitDialogSettings
+import io.github.vinceglb.filekit.dialogs.FileKitType
+import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
+import io.github.vinceglb.filekit.dialogs.compose.rememberFileSaverLauncher
 import org.koin.compose.viewmodel.koinViewModel
 import kotlin.random.Random
 
@@ -1643,7 +1651,7 @@ private fun MetricPillBadge(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun NetworkAndFilesTab(
     server: Server,
@@ -1657,8 +1665,29 @@ private fun NetworkAndFilesTab(
     var showNewTunnel by remember { mutableStateOf(false) }
     var pendingDeleteTunnel by remember { mutableStateOf<PortForwardTunnel?>(null) }
 
+    // Phase 6 binary transfers: the entry queued for the FileKit saver, plus the launchers.
+    var pendingDownloadEntry by remember { mutableStateOf<RemoteFileEntry?>(null) }
+
     LaunchedEffect(server.id) {
         viewModel.loadNetworkAndFiles(server, "/")
+    }
+
+    val saverLauncher = rememberFileSaverLauncher(
+        dialogSettings = FileKitDialogSettings.createDefault(),
+    ) { destination ->
+        val entry = pendingDownloadEntry
+        pendingDownloadEntry = null
+        if (destination != null && entry != null) {
+            viewModel.prepareFileDownload(server, entry, destination)
+        }
+    }
+    val pickerLauncher = rememberFilePickerLauncher(
+        type = FileKitType.File(),
+        dialogSettings = FileKitDialogSettings.createDefault(),
+    ) { source ->
+        if (source != null) {
+            viewModel.prepareFileUpload(server, source)
+        }
     }
 
     LazyColumn(
@@ -1684,6 +1713,29 @@ private fun NetworkAndFilesTab(
                         )
                         TextButton(onClick = viewModel::clearMessage) {
                             Text("OK")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Active streamed binary transfers (Phase 6): progress + per-row cancel.
+        if (netFiles.activeTransfers.isNotEmpty()) {
+            item(key = "active-file-transfers") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExpressiveSectionHeader(
+                        title = "File Transfers",
+                        count = netFiles.activeTransfers.size,
+                    )
+                    ExpressiveGroupedCard {
+                        netFiles.activeTransfers.forEachIndexed { index, transfer ->
+                            ActiveTransferRow(
+                                transfer = transfer,
+                                storageUnit = prefs.storageUnit,
+                                count = netFiles.activeTransfers.size,
+                                index = index,
+                                onCancel = { viewModel.cancelFileTransfer(transfer.id) },
+                            )
                         }
                     }
                 }
@@ -1935,6 +1987,16 @@ private fun NetworkAndFilesTab(
                     )
                 }
 
+                FilledTonalButton(
+                    onClick = pickerLauncher::launch,
+                    shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    Icon(Icons.Rounded.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Upload File Here")
+                }
+
                 if (netFiles.files.isNotEmpty()) {
                     ExpressiveGroupedCard {
                         netFiles.files.forEachIndexed { index, entry ->
@@ -1991,11 +2053,31 @@ private fun NetworkAndFilesTab(
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     } else {
-                                        MetricPillBadge(
-                                            text = "Edit",
-                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            TransferPill(
+                                                label = "Download",
+                                                icon = Icons.Rounded.FileDownload,
+                                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                onClick = {
+                                                    pendingDownloadEntry = entry
+                                                    saverLauncher.launch(
+                                                        suggestedName = entry.name,
+                                                        extension = entry.name.substringAfterLast('.', "").ifEmpty { null },
+                                                    )
+                                                },
+                                            )
+                                            TransferPill(
+                                                label = "Edit",
+                                                icon = null,
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                onClick = { viewModel.openRemoteFile(server, entry.fullPath) },
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -2140,6 +2222,164 @@ private fun NetworkAndFilesTab(
             },
             onDismiss = { pendingDeleteTunnel = null },
         )
+    }
+
+    // Size gate (Phase 6): anything above 100 MB needs an explicit confirmation.
+    netFiles.pendingTransferConfirmation?.let { pending ->
+        val direction = pending.direction
+        AlertDialog(
+            onDismissRequest = viewModel::dismissPendingTransfer,
+            shape = RoundedCornerShape(28.dp),
+            title = {
+                Text(
+                    text = if (direction == FileTransferDirection.DOWNLOAD) "Download Large File?" else "Upload Large File?",
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "${Formatters.formatBytes(pending.totalBytes, prefs.storageUnit)} — ${pending.localName}",
+                        style = MaterialTheme.typography.titleMedium.merge(design.monoNumericStyle),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = if (direction == FileTransferDirection.DOWNLOAD) {
+                            "Streams ${pending.remotePath} from ${server.name} to the picked location on this device."
+                        } else {
+                            "Streams ${pending.localName} to ${pending.remotePath} on ${server.name}. " +
+                                "Overwriting keeps the previous content at a .bak backup."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    shape = RoundedCornerShape(999.dp),
+                    onClick = viewModel::confirmPendingTransfer,
+                ) {
+                    Text(if (direction == FileTransferDirection.DOWNLOAD) "Download Anyway" else "Upload Anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissPendingTransfer) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+
+/** One running transfer: direction icon, name, path, progress bar and a Cancel pill. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun ActiveTransferRow(
+    transfer: ActiveFileTransfer,
+    storageUnit: StorageUnit,
+    index: Int,
+    count: Int,
+    onCancel: () -> Unit,
+) {
+    val design = LocalGlassrackDesign.current
+    val isDownload = transfer.direction == FileTransferDirection.DOWNLOAD
+    ExpressiveGroupedItem(
+        index = index,
+        count = count,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            ExpressiveIconTile(
+                icon = if (isDownload) Icons.Rounded.FileDownload else Icons.Rounded.FileUpload,
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                size = 38.dp,
+                iconSize = 19.dp,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = transfer.localFileName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = transfer.remotePath,
+                    style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            TextButton(onClick = onCancel) {
+                Text("Cancel")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        val fraction = transfer.fraction
+        if (fraction != null) {
+            LinearWavyProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                text = "${transfer.percent}% · " +
+                    "${Formatters.formatBytes(transfer.bytesTransferred, storageUnit)} / " +
+                    Formatters.formatBytes(transfer.totalBytes, storageUnit),
+                style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        } else {
+            LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text(
+                text = Formatters.formatBytes(transfer.bytesTransferred, storageUnit),
+                style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+/** Small clickable pill used for the per-file Download/Edit affordances. */
+@Composable
+private fun TransferPill(
+    label: String,
+    icon: ImageVector?,
+    containerColor: Color,
+    contentColor: Color,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(999.dp),
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp))
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
     }
 }
 

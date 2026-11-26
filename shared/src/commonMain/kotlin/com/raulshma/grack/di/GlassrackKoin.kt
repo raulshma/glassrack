@@ -35,7 +35,9 @@ val glassrackCommonModule = module {
 
     viewModel { OverviewViewModel(get(), get()) }
     viewModel { UpdatesViewModel(get(), get(), get()) }
-    viewModel { ServersViewModel(get(), get(), get(), get()) }
+    // TransferStreams (ContentResolver-backed) is Android-only: getOrNull keeps the VM and
+    // this module KMP-clean, and file transfers report as unsupported where it is missing.
+    viewModel { ServersViewModel(get(), get(), get(), get(), getOrNull()) }
     viewModel { ContainersViewModel(get(), get(), get()) }
     viewModel { ProcessesViewModel(get(), get(), get(), get()) }
     viewModel { TerminalViewModel(get(), get()) }

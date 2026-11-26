@@ -20,8 +20,14 @@ import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.sudoSecretVaultId
 import com.raulshma.grack.core.security.BiometricGate
 import com.raulshma.grack.core.security.SecureVault
+import com.raulshma.grack.core.ssh.FileTransferProgress
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.core.ssh.TextFileGuard
+import io.github.vinceglb.filekit.PlatformFile
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -29,7 +35,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 data class ServersUiState(
@@ -69,13 +78,59 @@ data class NetworkAndFilesState(
     val openedFileOriginal: String = "",
     val openedFileDraft: String = "",
     val statusMessage: String? = null,
+    /** Currently running streamed binary transfers (progress rows + per-row cancel). */
+    val activeTransfers: List<ActiveFileTransfer> = emptyList(),
+    /** Set when a transfer above the size threshold awaits explicit confirmation. */
+    val pendingTransferConfirmation: PendingTransferConfirmation? = null,
 )
+
+enum class FileTransferDirection { DOWNLOAD, UPLOAD }
+
+/** One running streamed binary transfer, rendered as a progress row with a Cancel pill. */
+data class ActiveFileTransfer(
+    val id: String,
+    val direction: FileTransferDirection,
+    val remotePath: String,
+    val localFileName: String,
+    val bytesTransferred: Long = 0L,
+    val totalBytes: Long = -1L,
+) {
+    /** 0..1 when the total size is known; `null` renders an indeterminate indicator. */
+    val fraction: Float?
+        get() = FileTransferProgress(bytesTransferred, totalBytes).fraction
+
+    val percent: Int?
+        get() = FileTransferProgress(bytesTransferred, totalBytes).percent
+}
+
+/** A transfer above [LARGE_TRANSFER_CONFIRM_BYTES] the user must confirm before it starts. */
+data class PendingTransferConfirmation(
+    val direction: FileTransferDirection,
+    val remotePath: String,
+    val localName: String,
+    val totalBytes: Long,
+)
+
+/** Files above 100 MB need an explicit confirmation dialog before a transfer starts. */
+const val LARGE_TRANSFER_CONFIRM_BYTES: Long = 100L * 1024 * 1024
+
+fun requiresTransferConfirmation(totalBytes: Long): Boolean = totalBytes > LARGE_TRANSFER_CONFIRM_BYTES
+
+/** Uploads land in the directory currently browsed in the Remote File Explorer. */
+fun remotePathForUpload(currentPath: String, fileName: String): String {
+    val dir = currentPath.trimEnd('/')
+    return if (dir.isEmpty()) "/$fileName" else "$dir/$fileName"
+}
 
 class ServersViewModel(
     private val repository: GlassrackRepository,
     private val controller: HomelabController,
     private val vault: SecureVault,
     private val biometricGate: BiometricGate,
+    /** ContentResolver-backed streams; `null` where file transfers are unsupported (iOS). */
+    private val transferStreams: TransferStreams? = null,
+    /** Injected so tests can run transfers entirely on the test scheduler. */
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
     private val _search = MutableStateFlow("")
@@ -92,6 +147,16 @@ class ServersViewModel(
 
     private val _netFiles = MutableStateFlow(NetworkAndFilesState())
     val netFilesState: StateFlow<NetworkAndFilesState> = _netFiles.asStateFlow()
+
+    /** Live transfer jobs by transfer id; cancel disconnects the channel via the transport. */
+    private val transferJobs = mutableMapOf<String, Job>()
+
+    /** Stashed picks waiting on the large-transfer confirmation dialog. */
+    private var pendingDownloadServer: Server? = null
+    private var pendingDownloadDestination: PlatformFile? = null
+    private var pendingUploadServer: Server? = null
+    private var pendingUploadSource: PlatformFile? = null
+    private var nextTransferSeq = 0
 
     val uiState: StateFlow<ServersUiState> = combine(
         controller.runtimeStates,
@@ -375,6 +440,212 @@ class ServersViewModel(
     }
 
     fun closeRemoteFile() = _netFiles.update { it.copy(openedFilePath = null) }
+
+    /**
+     * Phase 6 binary transfers. Files above [LARGE_TRANSFER_CONFIRM_BYTES] park in
+     * [NetworkAndFilesState.pendingTransferConfirmation] until the user confirms; smaller
+     * files start immediately. Progress rows land in [NetworkAndFilesState.activeTransfers]
+     * with a per-row cancel affordance; cancelling the job disconnects the SFTP channel in
+     * the transport, and the controller records a CANCELLED audit entry on the way out.
+     */
+
+    /** Streams [entry] into the FileKit-saver destination [destination]. */
+    fun prepareFileDownload(server: Server, entry: RemoteFileEntry, destination: PlatformFile) {
+        if (requiresTransferConfirmation(entry.sizeBytes)) {
+            pendingDownloadServer = server
+            pendingDownloadDestination = destination
+            _netFiles.update {
+                it.copy(
+                    pendingTransferConfirmation = PendingTransferConfirmation(
+                        direction = FileTransferDirection.DOWNLOAD,
+                        remotePath = entry.fullPath,
+                        localName = entry.name,
+                        totalBytes = entry.sizeBytes,
+                    ),
+                )
+            }
+        } else {
+            startFileDownload(server, entry.fullPath, destination, entry.name, entry.sizeBytes)
+        }
+    }
+
+    /** Streams the FileKit-picker file [source] into the currently browsed remote directory. */
+    fun prepareFileUpload(server: Server, source: PlatformFile) {
+        val streams = transferStreams
+        if (streams == null) {
+            _netFiles.update { it.copy(statusMessage = "File transfers are not supported on this platform") }
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val name = withContext(ioDispatcher) { streams.displayName(source) }
+                val size = withContext(ioDispatcher) { streams.sizeOf(source) }
+                val remotePath = remotePathForUpload(_netFiles.value.currentPath, name)
+                if (requiresTransferConfirmation(size)) {
+                    pendingUploadServer = server
+                    pendingUploadSource = source
+                    _netFiles.update {
+                        it.copy(
+                            pendingTransferConfirmation = PendingTransferConfirmation(
+                                direction = FileTransferDirection.UPLOAD,
+                                remotePath = remotePath,
+                                localName = name,
+                                totalBytes = size,
+                            ),
+                        )
+                    }
+                } else {
+                    startFileUpload(server, source, name, remotePath, size)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failed: Throwable) {
+                _netFiles.update { it.copy(statusMessage = "Upload failed: ${failed.message}") }
+            }
+        }
+    }
+
+    /** "Confirm" on the large-transfer dialog: starts the stashed transfer. */
+    fun confirmPendingTransfer() {
+        val pending = _netFiles.value.pendingTransferConfirmation ?: return
+        _netFiles.update { it.copy(pendingTransferConfirmation = null) }
+        when (pending.direction) {
+            FileTransferDirection.DOWNLOAD -> {
+                val server = pendingDownloadServer
+                val destination = pendingDownloadDestination
+                pendingDownloadServer = null
+                pendingDownloadDestination = null
+                if (server != null && destination != null) {
+                    startFileDownload(server, pending.remotePath, destination, pending.localName, pending.totalBytes)
+                }
+            }
+            FileTransferDirection.UPLOAD -> {
+                val server = pendingUploadServer
+                val source = pendingUploadSource
+                pendingUploadServer = null
+                pendingUploadSource = null
+                if (server != null && source != null) {
+                    startFileUpload(server, source, pending.localName, pending.remotePath, pending.totalBytes)
+                }
+            }
+        }
+    }
+
+    /** "Cancel" on the large-transfer dialog: drops the stashed pick, transfers nothing. */
+    fun dismissPendingTransfer() {
+        pendingDownloadServer = null
+        pendingDownloadDestination = null
+        pendingUploadServer = null
+        pendingUploadSource = null
+        _netFiles.update { it.copy(pendingTransferConfirmation = null) }
+    }
+
+    /** Cancels a running transfer; the transport disconnects the channel, audit says CANCELLED. */
+    fun cancelFileTransfer(transferId: String) {
+        transferJobs.remove(transferId)?.cancel()
+    }
+
+    private fun startFileDownload(
+        server: Server,
+        remotePath: String,
+        destination: PlatformFile,
+        localName: String,
+        totalBytes: Long,
+    ) {
+        val streams = transferStreams ?: run {
+            _netFiles.update { it.copy(statusMessage = "File transfers are not supported on this platform") }
+            return
+        }
+        val id = newTransferId()
+        addActiveTransfer(ActiveFileTransfer(id, FileTransferDirection.DOWNLOAD, remotePath, localName, 0L, totalBytes))
+        val job = viewModelScope.launch {
+            try {
+                val sink = withContext(ioDispatcher) { streams.openSink(destination) }
+                val bytes = controller.downloadFile(server, remotePath, sink) { progress ->
+                    updateTransferProgress(id, progress)
+                }
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Downloaded $localName ($bytes bytes)") }
+            } catch (timeout: TimeoutCancellationException) {
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Download timed out: $localName") }
+            } catch (cancelled: CancellationException) {
+                // Scope teardown rethrows; an explicit per-row cancel surfaces as a status.
+                if (!viewModelScope.isActive) throw cancelled
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Download cancelled: $localName") }
+            } catch (failed: Throwable) {
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Download failed: ${failed.message}") }
+            }
+        }
+        registerTransferJob(id, job)
+    }
+
+    private fun startFileUpload(
+        server: Server,
+        source: PlatformFile,
+        localName: String,
+        remotePath: String,
+        totalBytes: Long,
+    ) {
+        val streams = transferStreams ?: run {
+            _netFiles.update { it.copy(statusMessage = "File transfers are not supported on this platform") }
+            return
+        }
+        val id = newTransferId()
+        addActiveTransfer(ActiveFileTransfer(id, FileTransferDirection.UPLOAD, remotePath, localName, 0L, totalBytes))
+        val job = viewModelScope.launch {
+            try {
+                val transferSource = withContext(ioDispatcher) { streams.openSource(source) }
+                val bytes = controller.uploadFile(server, transferSource, remotePath, totalBytes) { progress ->
+                    updateTransferProgress(id, progress)
+                }
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Uploaded $localName to $remotePath ($bytes bytes)") }
+            } catch (timeout: TimeoutCancellationException) {
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Upload timed out: $localName") }
+            } catch (cancelled: CancellationException) {
+                if (!viewModelScope.isActive) throw cancelled
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Upload cancelled: $localName") }
+            } catch (failed: Throwable) {
+                removeActiveTransfer(id)
+                _netFiles.update { it.copy(statusMessage = "Upload failed: ${failed.message}") }
+            }
+        }
+        registerTransferJob(id, job)
+    }
+
+    private fun newTransferId(): String = "xfer-${nextTransferSeq++}"
+
+    private fun registerTransferJob(id: String, job: Job) {
+        transferJobs[id] = job
+        job.invokeOnCompletion { transferJobs.remove(id) }
+    }
+
+    private fun addActiveTransfer(transfer: ActiveFileTransfer) {
+        _netFiles.update { it.copy(activeTransfers = it.activeTransfers + transfer) }
+    }
+
+    private fun removeActiveTransfer(id: String) {
+        _netFiles.update { state -> state.copy(activeTransfers = state.activeTransfers.filterNot { it.id == id }) }
+    }
+
+    private fun updateTransferProgress(id: String, progress: FileTransferProgress) {
+        _netFiles.update { state ->
+            state.copy(
+                activeTransfers = state.activeTransfers.map { current ->
+                    if (current.id == id) {
+                        current.copy(bytesTransferred = progress.bytesTransferred, totalBytes = progress.totalBytes)
+                    } else {
+                        current
+                    }
+                },
+            )
+        }
+    }
 
     /** Deletes a saved tunnel, closing its live forward first. */
     fun deleteTunnel(tunnel: PortForwardTunnel, server: Server) {

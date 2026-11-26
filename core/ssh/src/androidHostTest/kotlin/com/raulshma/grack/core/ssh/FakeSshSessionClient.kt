@@ -50,10 +50,28 @@ internal class FakeSshSessionClient : SshSessionClient {
         val timeoutMs: Long,
     )
 
+    data class BinaryDownloadRequest(
+        val server: Server,
+        val remotePath: String,
+        val timeoutMs: Long?,
+        val destination: TransferSink,
+        val onProgress: suspend (FileTransferProgress) -> Unit,
+    )
+
+    data class BinaryUploadRequest(
+        val server: Server,
+        val remotePath: String,
+        val totalBytes: Long,
+        val timeoutMs: Long?,
+        val onProgress: suspend (FileTransferProgress) -> Unit,
+    )
+
     val executeRequests = mutableListOf<ExecRequest>()
     val streamRequests = mutableListOf<StreamRequest>()
     val writeRequests = mutableListOf<WriteRequest>()
     val uploadRequests = mutableListOf<UploadRequest>()
+    val downloadRequests = mutableListOf<BinaryDownloadRequest>()
+    val binaryUploadRequests = mutableListOf<BinaryUploadRequest>()
     val disconnectIdleCalls = mutableListOf<Long>()
 
     var executeHandler: suspend (ExecRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
@@ -68,6 +86,10 @@ internal class FakeSshSessionClient : SshSessionClient {
     var uploadFileHandler: suspend (UploadRequest) -> Unit = { }
     var readFileHandler: suspend (server: Server, remotePath: String) -> String = { _, _ -> "" }
     var testConnectionHandler: suspend (server: Server, transientPassword: String?) -> Result<HostKeyChallenge?> = { _, _ -> Result.success(null) }
+
+    /** Scriptable streamed binary transfers; the default moves no bytes. */
+    var downloadFileHandler: suspend (BinaryDownloadRequest) -> Long = { 0L }
+    var uploadFileHandlerBinary: suspend (BinaryUploadRequest) -> Long = { 0L }
 
     override suspend fun execute(
         server: Server,
@@ -146,6 +168,38 @@ internal class FakeSshSessionClient : SshSessionClient {
         uploadRequests += request
         uploadFileHandler(request)
     }
+
+    override suspend fun downloadFile(
+        server: Server,
+        allServers: List<Server>,
+        remotePath: String,
+        destination: TransferSink,
+        timeoutMs: Long?,
+        onProgress: suspend (FileTransferProgress) -> Unit,
+    ): Long {
+        val request = BinaryDownloadRequest(server, remotePath, timeoutMs, destination, onProgress)
+        downloadRequests += request
+        // The real transport enforces the (nullable) budget; the fake mirrors that contract
+        // so the controller's TIMEOUT auditing is observable in tests.
+        return enforceTimeout(request.timeoutMs) { downloadFileHandler(request) }
+    }
+
+    override suspend fun uploadFile(
+        server: Server,
+        allServers: List<Server>,
+        localSource: TransferSource,
+        remotePath: String,
+        totalBytes: Long,
+        timeoutMs: Long?,
+        onProgress: suspend (FileTransferProgress) -> Unit,
+    ): Long {
+        val request = BinaryUploadRequest(server, remotePath, totalBytes, timeoutMs, onProgress)
+        binaryUploadRequests += request
+        return enforceTimeout(request.timeoutMs) { uploadFileHandlerBinary(request) }
+    }
+
+    private suspend fun <T> enforceTimeout(timeoutMs: Long?, block: suspend () -> T): T =
+        if (timeoutMs == null) block() else kotlinx.coroutines.withTimeout(timeoutMs) { block() }
 
     override suspend fun deployPublicKey(
         server: Server,

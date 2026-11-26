@@ -19,6 +19,8 @@ dependencies {
     implementation(projects.core.database)
     implementation(projects.core.ssh)
     implementation(projects.core.terminal)
+    // Phase 6: ContentResolver-backed transfer streams bound into Koin from the app module.
+    implementation(projects.feature.servers)
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.appcompat)

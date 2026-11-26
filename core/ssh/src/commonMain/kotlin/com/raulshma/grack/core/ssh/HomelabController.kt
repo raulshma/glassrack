@@ -1250,6 +1250,145 @@ class HomelabController(
         }
     }
 
+    /**
+     * Streams [remotePath] from the node into [destination] (Phase 6 binary transfers,
+     * memory-bounded on the transport). Audited like the text save under
+     * [AuditCategory.CONFIG] with the real duration and outcome; cancellation records
+     * CANCELLED under NonCancellable and rethrows. Downloads are reads: Safe Read-Only
+     * Mode does not apply to them. Progress reports land in [onProgress] when supplied.
+     */
+    suspend fun downloadFile(
+        server: Server,
+        remotePath: String,
+        destination: TransferSink,
+        timeoutMs: Long? = DEFAULT_TRANSFER_TIMEOUT_MS,
+        onProgress: (suspend (FileTransferProgress) -> Unit)? = null,
+    ): Long {
+        val started = currentTimeEpochMs()
+        try {
+            val bytes = sshClient.downloadFile(server, latestServers, remotePath, destination, timeoutMs) { progress ->
+                onProgress?.invoke(progress)
+            }
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Downloaded File: $remotePath",
+                rawCommand = "sftp get $remotePath",
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.SUCCESS,
+                exitCode = 0,
+                durationMs = currentTimeEpochMs() - started,
+                outputSnippet = "Transferred $bytes bytes to the local device.",
+            )
+            return bytes
+        } catch (timeoutEx: TimeoutCancellationException) {
+            recordFileTransferFailure(server, remotePath, "sftp get $remotePath", started, AuditOutcome.TIMEOUT, timeoutEx.message)
+            throw timeoutEx
+        } catch (cancelled: CancellationException) {
+            recordFileTransferFailure(server, remotePath, "sftp get $remotePath", started, AuditOutcome.CANCELLED, cancelled.message)
+            throw cancelled
+        } catch (t: Throwable) {
+            recordFileTransferFailure(server, remotePath, "sftp get $remotePath", started, AuditOutcome.FAILED, t.message)
+            throw t
+        }
+    }
+
+    /**
+     * Streams a local [localSource] up to [remotePath]; the transport captures
+     * `<remotePath>.bak` first when the remote file already exists (a failed backup aborts
+     * the upload). Blocked under Safe Read-Only Mode, and — unlike the text save — a
+     * permission failure is recorded as a plain FAILED entry with no privileged-save
+     * escalation: that path exists only for the text editor's small config files.
+     */
+    suspend fun uploadFile(
+        server: Server,
+        localSource: TransferSource,
+        remotePath: String,
+        totalBytes: Long = -1L,
+        timeoutMs: Long? = DEFAULT_TRANSFER_TIMEOUT_MS,
+        onProgress: (suspend (FileTransferProgress) -> Unit)? = null,
+    ): Long {
+        if (repository.preferences.first().safeReadOnlyMode) {
+            val reason = "Blocked: Safe Read-Only Mode is active"
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Uploaded File: $remotePath",
+                rawCommand = "sftp put $remotePath",
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.BLOCKED,
+                exitCode = null,
+                durationMs = 0L,
+                outputSnippet = reason,
+            )
+            throw IllegalStateException(reason)
+        }
+        val started = currentTimeEpochMs()
+        try {
+            val bytes = sshClient.uploadFile(server, latestServers, localSource, remotePath, totalBytes, timeoutMs) { progress ->
+                onProgress?.invoke(progress)
+            }
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Uploaded File: $remotePath",
+                rawCommand = "sftp put $remotePath",
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.SUCCESS,
+                exitCode = 0,
+                durationMs = currentTimeEpochMs() - started,
+                outputSnippet = "Uploaded $bytes bytes from the local device.",
+            )
+            return bytes
+        } catch (timeoutEx: TimeoutCancellationException) {
+            recordFileTransferFailure(server, remotePath, "sftp put $remotePath", started, AuditOutcome.TIMEOUT, timeoutEx.message)
+            throw timeoutEx
+        } catch (cancelled: CancellationException) {
+            recordFileTransferFailure(server, remotePath, "sftp put $remotePath", started, AuditOutcome.CANCELLED, cancelled.message)
+            throw cancelled
+        } catch (t: Throwable) {
+            recordFileTransferFailure(server, remotePath, "sftp put $remotePath", started, AuditOutcome.FAILED, t.message)
+            throw t
+        }
+    }
+
+    private suspend fun recordFileTransferFailure(
+        server: Server,
+        remotePath: String,
+        rawCommand: String,
+        startedEpochMs: Long,
+        outcome: AuditOutcome,
+        reason: String?,
+    ) {
+        // NonCancellable: the calling scope may already be cancelled; the audit entry must
+        // still be written (same reasoning as recordFileSaveFailure).
+        withContext(NonCancellable) {
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = if (rawCommand.startsWith("sftp get")) {
+                    "Downloaded File: $remotePath"
+                } else {
+                    "Uploaded File: $remotePath"
+                },
+                rawCommand = rawCommand,
+                triggerSource = TriggerSource.UI,
+                outcome = outcome,
+                exitCode = -1,
+                durationMs = currentTimeEpochMs() - startedEpochMs,
+                outputSnippet = reason.orEmpty(),
+            )
+        }
+    }
+
     suspend fun deployPublicKey(server: Server, publicKey: String): SshExecResult {
         return sshClient.deployPublicKey(server, latestServers, publicKey)
     }
