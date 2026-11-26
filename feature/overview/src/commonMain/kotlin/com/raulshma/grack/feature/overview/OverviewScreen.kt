@@ -103,6 +103,7 @@ import com.raulshma.grack.core.model.AppAlert
 import com.raulshma.grack.core.model.ContainerAction
 import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerState
+import com.raulshma.grack.core.model.ComposeStack
 import com.raulshma.grack.core.model.DashboardTile
 import com.raulshma.grack.core.model.Formatters
 import com.raulshma.grack.core.model.JobPhase
@@ -128,10 +129,13 @@ fun OverviewScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val design = LocalGlassrackDesign.current
+    val updatesViewModel: UpdatesViewModel = koinViewModel()
+    val updatesState by updatesViewModel.uiState.collectAsState()
     val gridState = rememberLazyGridState()
     val hasHeroCard by rememberUpdatedState(state.servers.isNotEmpty())
     val reorderableState = rememberReorderableLazyGridState(gridState) { from, to ->
-        val offset = if (hasHeroCard) 1 else 0
+        // Fixed grid items ahead of the tiles: the hero card plus the Updates card.
+        val offset = if (hasHeroCard) 2 else 0
         val fromIdx = from.index - offset
         val toIdx = to.index - offset
         if (fromIdx >= 0 && toIdx >= 0) {
@@ -390,6 +394,14 @@ fun OverviewScreen(
                     )
                 }
 
+                item(key = "updates-card", span = { GridItemSpan(2) }) {
+                    UpdatesCard(
+                        state = updatesState,
+                        onScanNow = updatesViewModel::scanNow,
+                        onOpenSheet = { updatesViewModel.setShowSheet(true) },
+                    )
+                }
+
                 if (state.tiles.isEmpty()) {
                     item(key = "empty-dashboard", span = { GridItemSpan(2) }) {
                         ExpressiveEmptyState(
@@ -502,6 +514,61 @@ fun OverviewScreen(
             confirmationLevel = state.preferences.destructiveConfirmation,
             onConfirm = { viewModel.confirmTileContainerAction() },
             onDismiss = viewModel::dismissTileContainerAction,
+        )
+    }
+
+    // Phase 3B Updates card: list sheet plus the gated apply dialogs.
+    if (updatesState.showSheet) {
+        UpdatesSheet(
+            state = updatesState,
+            onDismiss = { updatesViewModel.setShowSheet(false) },
+            onScanNow = updatesViewModel::scanNow,
+            onApplyOs = updatesViewModel::requestOsApply,
+            onUpdateStack = { server, project, dir, files ->
+                updatesViewModel.requestStackUpdate(
+                    server,
+                    ComposeStack(
+                        projectName = project,
+                        workingDir = dir,
+                        configFiles = files,
+                    ),
+                )
+            },
+            onPullContainer = updatesViewModel::requestPull,
+        )
+    }
+
+    updatesState.pendingOsApply?.let { server ->
+        ActionSafetyDialog(
+            title = "Apply OS updates on ${server.name}?",
+            description = "Runs the node's package manager upgrade over privileged SSH " +
+                "(up to 30 minutes, streamed). Services may restart; GRack never reboots " +
+                "from this action.",
+            confirmationLevel = state.preferences.destructiveConfirmation,
+            onConfirm = updatesViewModel::confirmOsApply,
+            onDismiss = updatesViewModel::dismissOsApply,
+        )
+    }
+
+    updatesState.pendingStackUpdate?.let { (server, stack) ->
+        ActionSafetyDialog(
+            title = "Update stack ${stack.projectName}?",
+            description = "Pulls new images and recreates the services of stack " +
+                "'${stack.projectName}' on ${server.name}.",
+            confirmationLevel = state.preferences.destructiveConfirmation,
+            onConfirm = updatesViewModel::confirmStackUpdate,
+            onDismiss = updatesViewModel::dismissStackUpdate,
+        )
+    }
+
+    updatesState.pendingPull?.let { (server, container) ->
+        ActionSafetyDialog(
+            title = "Pull ${container.name}?",
+            description = "Pulls the newest image for '${container.name}' and recreates the " +
+                "container on ${server.name}.",
+            confirmationLevel = state.preferences.destructiveConfirmation,
+            onConfirm = updatesViewModel::confirmPull,
+            onDismiss = updatesViewModel::dismissPull,
         )
     }
 }

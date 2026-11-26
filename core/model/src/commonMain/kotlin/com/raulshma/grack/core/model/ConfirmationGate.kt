@@ -13,6 +13,14 @@ fun requiresConfirmation(
     prefs: UserPreferences,
 ): Boolean = actionIsDestructive && prefs.destructiveConfirmation != ConfirmationLevel.NONE
 
+/**
+ * OS update applies and container update applies (stack update, image pull) restart
+ * services and replace workloads, so they always count as destructive for the gate.
+ * Every update-apply call site asks this helper, mirroring the Phase 1B destructive gate.
+ */
+fun updateApplyRequiresConfirmation(prefs: UserPreferences): Boolean =
+    requiresConfirmation(actionIsDestructive = true, prefs = prefs)
+
 /** systemd verbs that interrupt a running unit and therefore count as destructive. */
 fun isDestructiveServiceVerb(verb: String): Boolean =
     verb.trim().lowercase() in DESTRUCTIVE_SERVICE_VERBS

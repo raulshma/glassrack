@@ -11,6 +11,7 @@ import com.raulshma.grack.core.ssh.SshSessionClient
 import com.raulshma.grack.feature.audit.AuditViewModel
 import com.raulshma.grack.feature.containers.ContainersViewModel
 import com.raulshma.grack.feature.overview.OverviewViewModel
+import com.raulshma.grack.feature.overview.UpdatesViewModel
 import com.raulshma.grack.feature.processes.ProcessesViewModel
 import com.raulshma.grack.feature.servers.ServersViewModel
 import com.raulshma.grack.feature.settings.SettingsViewModel
@@ -33,6 +34,7 @@ val glassrackCommonModule = module {
     single { HomelabController(get(), get(), containerStateCache = getOrNull()) }
 
     viewModel { OverviewViewModel(get(), get()) }
+    viewModel { UpdatesViewModel(get(), get(), get()) }
     viewModel { ServersViewModel(get(), get(), get(), get()) }
     viewModel { ContainersViewModel(get(), get(), get()) }
     viewModel { ProcessesViewModel(get(), get(), get(), get()) }

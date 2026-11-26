@@ -149,6 +149,16 @@ class GlassrackRepository(
         db.serverDao().upsert(existing.copy(hostKeyFingerprint = fingerprintSha256))
     }
 
+    /**
+     * Persists (or clears) only the node's Phase-3B update report, without rewriting the
+     * rest of the row — a scan that lands while capabilities were re-probed must not
+     * clobber either column.
+     */
+    suspend fun updateUpdateReport(serverId: String, updateReportJson: String?) {
+        val existing = db.serverDao().getById(serverId) ?: return
+        db.serverDao().upsert(existing.copy(updateReportJson = updateReportJson))
+    }
+
     suspend fun saveSshKey(record: SshKeyRecord, privateKeyPem: String, passphrase: String?) {
         vault.putSecret(record.privateKeyVaultRef, privateKeyPem)
         if (!passphrase.isNullOrEmpty()) {

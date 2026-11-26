@@ -11,12 +11,18 @@ import com.raulshma.grack.core.model.ContainerAction
 import com.raulshma.grack.core.model.ContainerImageInfo
 import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerRuntime
+import com.raulshma.grack.core.model.ContainerUpdateEntry
+import com.raulshma.grack.core.model.ContainerUpdateStatus
 import com.raulshma.grack.core.model.CronEntry
+import com.raulshma.grack.core.model.DistroFamily
 import com.raulshma.grack.core.model.HostKeyChallenge
 import com.raulshma.grack.core.model.JobPhase
 import com.raulshma.grack.core.model.MetricSnapshot
 import com.raulshma.grack.core.model.NetworkInterfaceInfo
 import com.raulshma.grack.core.model.NetworkPortInfo
+import com.raulshma.grack.core.model.NodeUpdateReport
+import com.raulshma.grack.core.model.OsScanStatus
+import com.raulshma.grack.core.model.OsUpdateSection
 import com.raulshma.grack.core.model.ProcessInfo
 import com.raulshma.grack.core.model.ProcessSignal
 import com.raulshma.grack.core.model.RemoteFileEntry
@@ -27,6 +33,7 @@ import com.raulshma.grack.core.model.SudoAuth
 import com.raulshma.grack.core.model.SystemdUnit
 import com.raulshma.grack.core.model.TriggerSource
 import com.raulshma.grack.core.model.currentTimeEpochMs
+import com.raulshma.grack.core.model.distroFamilyForDistroId
 import com.raulshma.grack.core.model.sudoSecretVaultId
 import com.raulshma.grack.core.security.SecureVault
 import kotlinx.collections.immutable.toImmutableList
@@ -48,6 +55,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlin.coroutines.CoroutineContext
 import kotlin.random.Random
 
@@ -95,6 +104,12 @@ class HomelabController(
     /** serverId -> epoch ms until which a successful `sudo -n true` probe stays trusted. */
     private val passwordlessSudoUntilMs = mutableMapOf<String, Long>()
     private val sudoProbeMutex = Mutex()
+
+    /** One apply mutex per server id (Phase 3B): update applies to a node never interleave. */
+    private val applyMutexes = mutableMapOf<String, Mutex>()
+
+    /** kotlinx.serialization Json for the persisted NodeUpdateReport (`updateReportJson`). */
+    private val reportJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     init {
         scope.launch {
@@ -725,6 +740,276 @@ class HomelabController(
         return TelemetryParsers.parseImages(res.stdout)
     }
 
+    // ------------------------------------------------------------------
+    // Phase 3B — update scan and manual apply
+    // ------------------------------------------------------------------
+
+    /**
+     * Runs the distro-appropriate OS update check ([UpdateProbes.updateCheckScript], selected
+     * by `capabilities.distroId`) and parses it into an [OsUpdateSection]. `dnf`'s exit 100 is
+     * success-with-updates, not failure; connection errors become a FAILED section rather than
+     * an exception so one unreachable node cannot sink a cluster-wide scan.
+     */
+    suspend fun scanOsUpdates(server: Server): OsUpdateSection {
+        val family = distroFamilyForDistroId(server.capabilities.distroId)
+        return runCatching {
+            val res = sshClient.execute(
+                server,
+                latestServers,
+                UpdateProbes.updateCheckScript(server.capabilities),
+                OS_UPDATE_SCAN_TIMEOUT_MS,
+            )
+            if (res.exitCode != 0 || !res.stdout.contains("===OSUPD===")) {
+                OsUpdateSection(
+                    family = family,
+                    status = OsScanStatus.FAILED,
+                    packages = emptyList(),
+                    detail = res.stderr.ifBlank { "exit ${res.exitCode}" }.take(200),
+                )
+            } else {
+                UpdateParsers.parseOsUpdateSection(res.stdout, family)
+            }
+        }.onFailure { Logger.w(it) { "OS update scan failed for ${server.name}" } }
+            .getOrElse { OsUpdateSection(family, OsScanStatus.FAILED, emptyList(), it.message ?: "Scan failed") }
+    }
+
+    /**
+     * Store-aware container update scan (docker only; Podman verdicts stay UNKNOWN — its
+     * per-arch digest semantics would make comparisons guesses). Per image:
+     * digest-pinned -> PINNED, no RepoDigests -> LOCAL, buildx index-digest comparison,
+     * classic-store fallback via `manifest inspect -v`, everything else UNKNOWN.
+     * Returned containers carry [ContainerInfo.updateAvailable] from the verdicts.
+     */
+    suspend fun scanContainerUpdates(server: Server): ContainerUpdateScanResult {
+        val containers = fetchContainers(server)
+        if (containers.isEmpty()) return ContainerUpdateScanResult(emptyList(), containers)
+        if (containerRuntimeFor(server) == ContainerRuntime.PODMAN) {
+            // Podman: registry digest comparison is not stable (per-arch manifests, no index
+            // digest exposure); UNKNOWN until dedicated support lands (backlog).
+            return ContainerUpdateScanResult(
+                containers.map { it.toUnknownUpdateEntry() },
+                containers,
+            )
+        }
+        val images = runCatching { fetchImages(server) }
+            .onFailure { Logger.w(it) { "Image listing failed during update scan" } }
+            .getOrDefault(emptyList())
+        val imageByRef = images.associateBy { normalizedImageRef(it.repository, it.tag) }
+        val probeCache = mutableMapOf<String, ContainerDigestProbe>()
+        val entries = containers.map { container ->
+            val ref = container.image
+            when {
+                // Digest-pinned references never float: there is nothing to update.
+                ref.contains('@') -> ContainerUpdateEntry(
+                    containerName = container.name,
+                    image = ref,
+                    composeProject = container.composeProject,
+                    composeWorkingDir = container.composeWorkingDir,
+                    composeConfigFiles = container.composeConfigFiles,
+                    status = ContainerUpdateStatus.PINNED,
+                    localRepoDigest = ref.substringAfter('@'),
+                )
+                else -> {
+                    val image = imageByRef[normalizedImageRef(ref)]
+                    when {
+                        image == null -> container.toUnknownUpdateEntry().copy(
+                            localRepoDigest = "",
+                        )
+                        image.digest.isBlank() -> ContainerUpdateEntry(
+                            containerName = container.name,
+                            image = ref,
+                            composeProject = container.composeProject,
+                            composeWorkingDir = container.composeWorkingDir,
+                            composeConfigFiles = container.composeConfigFiles,
+                            status = ContainerUpdateStatus.LOCAL,
+                        )
+                        else -> {
+                            val probe = probeCache.getOrPut(ref) {
+                                UpdateParsers.parseContainerDigestProbe(runCatching {
+                                    sshClient.execute(
+                                        server,
+                                        latestServers,
+                                        UpdateProbes.containerDigestProbeScript(containerRuntimeFor(server).binaryName, ref),
+                                        CONTAINER_DIGEST_PROBE_TIMEOUT_MS,
+                                    ).stdout
+                                }.onFailure { Logger.w(it) { "Digest probe failed for $ref" } }.getOrNull())
+                            }
+                            val decision = UpdateParsers.decideContainerUpdate(image.digest, image.id, probe)
+                            ContainerUpdateEntry(
+                                containerName = container.name,
+                                image = ref,
+                                composeProject = container.composeProject,
+                                composeWorkingDir = container.composeWorkingDir,
+                                composeConfigFiles = container.composeConfigFiles,
+                                status = decision.status,
+                                localRepoDigest = image.digest,
+                                remoteDigest = decision.remoteDigest,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        val updateNames = entries.filter { it.status == ContainerUpdateStatus.UPDATE_AVAILABLE }
+            .map { it.containerName }
+            .toSet()
+        return ContainerUpdateScanResult(
+            entries = entries,
+            containers = containers.map { it.copy(updateAvailable = it.name in updateNames) },
+        )
+    }
+
+    /**
+     * Full node scan: OS check + container verdicts, persisted as JSON into
+     * `servers.updateReportJson` so the Overview card renders counts without scanning again.
+     * A container scan runs only on docker nodes; a failed OS scan is recorded as FAILED
+     * rather than aborting the whole report.
+     */
+    suspend fun scanNodeUpdates(server: Server): NodeUpdateReport {
+        val os = scanOsUpdates(server)
+        val containerScan = if (server.capabilities.hasDocker) {
+            runCatching { scanContainerUpdates(server) }
+                .onFailure { Logger.w(it) { "Container update scan failed for ${server.name}" } }
+                .getOrDefault(ContainerUpdateScanResult(emptyList(), emptyList()))
+        } else {
+            ContainerUpdateScanResult(emptyList(), emptyList())
+        }
+        val report = NodeUpdateReport(
+            scannedAtEpochMs = currentTimeEpochMs(),
+            os = os,
+            containers = containerScan.entries,
+        )
+        runCatching {
+            repository.updateUpdateReport(server.id, reportJson.encodeToString(report))
+        }.onFailure { Logger.w(it) { "Update report persistence failed for ${server.name}" } }
+        return report
+    }
+
+    /**
+     * Applies OS updates for [server]'s distro family through [executePrivileged] (root,
+     * passwordless sudo or sudo credential — never a bare unprivileged upgrade), streamed,
+     * with a 30-minute budget, under the per-server apply mutex and audited as
+     * [AuditCategory.SYSTEM]. The apply command never contains a reboot or shutdown verb
+     * (asserted in tests); afterwards a read-only probe decides whether the UI shows
+     * "reboot recommended".
+     */
+    suspend fun applyOsUpdates(
+        server: Server,
+        vault: SecureVault,
+        triggerSource: TriggerSource = TriggerSource.UI,
+    ): OsApplyResult {
+        val family = distroFamilyForDistroId(server.capabilities.distroId)
+        val command = UpdateProbes.osUpdateApplyCommand(family)
+        if (command.isBlank()) {
+            recordBlockedAction(
+                server = server,
+                category = AuditCategory.SYSTEM,
+                actionTitle = "Apply OS updates",
+                command = "",
+                reason = "Unsupported distro '${server.capabilities.distroId}' for OS updates",
+                triggerSource = triggerSource,
+            )
+            return OsApplyResult(SshExecResult(-1, "", "Unsupported distro for OS updates", 0), false, family)
+        }
+        return withUpdateApplyLock(server.id) {
+            val exec = executePrivileged(
+                server = server,
+                command = command,
+                category = AuditCategory.SYSTEM,
+                actionTitle = "Apply OS updates",
+                vault = vault,
+                triggerSource = triggerSource,
+                timeoutMs = OS_APPLY_TIMEOUT_MS,
+                streaming = true,
+            )
+            val rebootRecommended = if (exec.exitCode == 0) probeRebootRecommended(server) else false
+            OsApplyResult(exec, rebootRecommended, family)
+        }
+    }
+
+    /**
+     * Read-only reboot-recommendation probe (Debian `/var/run/reboot-required`,
+     * RHEL `needs-restarting -r`). Deliberately NOT routed through executePrivileged —
+     * the marker file is world-readable and this is a question, not an action.
+     */
+    suspend fun probeRebootRecommended(server: Server): Boolean {
+        val family = distroFamilyForDistroId(server.capabilities.distroId)
+        if (family != DistroFamily.DEBIAN && family != DistroFamily.RHEL) return false
+        return runCatching {
+            val res = sshClient.execute(
+                server,
+                latestServers,
+                UpdateProbes.rebootRecommendedScript(),
+                REBOOT_CHECK_TIMEOUT_MS,
+            )
+            UpdateParsers.parseRebootRecommended(res.stdout, family)
+        }.onFailure { Logger.w(it) { "Reboot recommendation probe failed for ${server.name}" } }
+            .getOrDefault(false)
+    }
+
+    /**
+     * Stack update from the Updates card (Phase 3A `update` pseudo-verb: `pull && compose up -d`,
+     * honouring `config_files`), serialized with the per-server apply mutex.
+     */
+    suspend fun applyStackUpdate(
+        server: Server,
+        projectName: String,
+        workingDir: String?,
+        configFiles: String?,
+        triggerSource: TriggerSource = TriggerSource.UI,
+    ): SshExecResult = withUpdateApplyLock(server.id) {
+        performComposeStackAction(
+            server = server,
+            projectName = projectName,
+            workingDir = workingDir,
+            verb = "update",
+            triggerSource = triggerSource,
+            configFiles = configFiles,
+        )
+    }
+
+    /**
+     * Pull-and-recreate for a standalone (or compose-service) container, serialized with the
+     * per-server apply mutex. Compose-service containers go through `compose pull/up`;
+     * standalone ones through `<runtime> pull '<image>'`.
+     */
+    suspend fun applyContainerPull(
+        server: Server,
+        container: ContainerInfo,
+        triggerSource: TriggerSource = TriggerSource.UI,
+    ): SshExecResult = withUpdateApplyLock(server.id) {
+        performContainerAction(server, container, ContainerAction.PULL_RECREATE, triggerSource)
+    }
+
+    /**
+     * Per-server apply mutex: two applies to one node can never interleave (an OS upgrade
+     * racing a compose update would corrupt both). Phase 4 AUTO updates reuse this lock.
+     */
+    suspend fun <T> withUpdateApplyLock(serverId: String, block: suspend () -> T): T =
+        applyMutexFor(serverId).withLock { block() }
+
+    private fun applyMutexFor(serverId: String): Mutex =
+        applyMutexes.getOrPut(serverId) { Mutex() }
+
+    /** `nginx` -> `nginx:latest`; the tag is the part after the last `:` in the last path segment. */
+    private fun normalizedImageRef(ref: String): String =
+        if (ref.substringAfterLast('/').contains(':')) ref else "$ref:latest"
+
+    /** Joins an images-listing row (`Repository`, `Tag`) into the same normalized ref space. */
+    private fun normalizedImageRef(repository: String, tag: String): String {
+        val repo = repository.trim()
+        return if (tag.isBlank() || tag == "<none>") repo else "$repo:$tag"
+    }
+
+    private fun ContainerInfo.toUnknownUpdateEntry() = ContainerUpdateEntry(
+        containerName = name,
+        image = image,
+        composeProject = composeProject,
+        composeWorkingDir = composeWorkingDir,
+        composeConfigFiles = composeConfigFiles,
+        status = ContainerUpdateStatus.UNKNOWN,
+    )
+
     /** Removes a single image (`<runtime> rmi <id>`); destructive and audited. */
     suspend fun performImageRemove(
         server: Server,
@@ -1088,6 +1373,18 @@ class HomelabController(
 
         /** Compose pull/up download images; give them 15 minutes. */
         const val COMPOSE_UPDATE_TIMEOUT_MS: Long = 15 * 60_000L
+
+        /** OS update-check probe budget (an `apt-get update` on a slow mirror can take a while). */
+        const val OS_UPDATE_SCAN_TIMEOUT_MS: Long = 120_000L
+
+        /** OS update applies are streamed and get a 30-minute budget (Phase 3B). */
+        const val OS_APPLY_TIMEOUT_MS: Long = 30 * 60_000L
+
+        /** Per-image registry digest probe budget. */
+        const val CONTAINER_DIGEST_PROBE_TIMEOUT_MS: Long = 30_000L
+
+        /** Post-apply reboot-recommendation probe budget. */
+        const val REBOOT_CHECK_TIMEOUT_MS: Long = 15_000L
 
         /** Tail length of the `logs -f` follow stream. */
         const val FOLLOW_LOGS_TAIL: Int = 200

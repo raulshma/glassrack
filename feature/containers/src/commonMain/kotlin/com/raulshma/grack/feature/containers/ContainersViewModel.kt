@@ -11,10 +11,12 @@ import com.raulshma.grack.core.model.ContainerAction
 import com.raulshma.grack.core.model.ContainerImageInfo
 import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerState
+import com.raulshma.grack.core.model.NodeUpdateReport
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.isDestructiveComposeVerb
 import com.raulshma.grack.core.model.requiresConfirmation
+import com.raulshma.grack.core.model.withUpdateFlags
 import com.raulshma.grack.core.security.BiometricGate
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.core.ssh.TelemetryParsers
@@ -76,7 +78,10 @@ class ContainersViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             runCatching {
-                val all = controller.fetchContainers(server)
+                // The persisted Phase-3B report drives the "Update" badge on re-polls
+                // (fetchContainers itself never knows the verdicts).
+                val report = NodeUpdateReport.fromJson(server.updateReportJson)
+                val all = controller.fetchContainers(server).withUpdateFlags(report)
                 val (stacks, standalone) = TelemetryParsers.groupComposeStacks(all)
                 // A failed image listing must not blank the container list.
                 val images = runCatching { controller.fetchImages(server) }
