@@ -1,6 +1,7 @@
 package com.raulshma.grack.feature.servers
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lan
 import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RestartAlt
@@ -52,6 +54,8 @@ import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
@@ -71,14 +75,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -615,6 +626,12 @@ private fun ServerDetailPane(
     var confirmPowerAction by remember { mutableStateOf<Boolean?>(null) }
     var confirmDeleteNode by remember { mutableStateOf(false) }
 
+    // Phase 5 (request #4): collapsing detail header. One state + one connection cover all
+    // five detail tabs; showing a different node resets the header to expanded.
+    val settleScope = rememberCoroutineScope()
+    val headerState = remember(server.id, settleScope) { CollapsingDetailHeaderState(settleScope) }
+    val headerConnection = remember(headerState) { headerState.nestedScrollConnection() }
+
     val heroContainerColor = when (runtime.health) {
         ServerHealth.OFFLINE -> MaterialTheme.colorScheme.errorContainer
         ServerHealth.WARNING -> design.statusWarnContainer
@@ -721,63 +738,104 @@ private fun ServerDetailPane(
             }
         }
 
-        ExpressiveHeroCard(
-            headline = server.name,
-            subtitle = subtitleText.ifBlank { "${server.username}@${server.primaryHost}:${server.port}" },
-            eyebrow = buildString {
-                append(server.groupTag)
-                append(" · ")
-                append(runtime.health.name)
-                runtime.latestMetric?.let { append(" · ${it.latencyMs}ms") }
-            },
-            containerColor = heroContainerColor,
-            contentColor = heroContentColor,
-            badgeIcon = heroBadgeIcon,
-            badgeShape = ExpressiveBadgeShape.Cookie9Sided,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-            actions = {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    heroActions.forEachIndexed { index, action ->
-                        val shape = expressiveHorizontalGroupShape(index = index, count = heroActions.size)
-                        val pillContainer = if (action.isDestructive) {
-                            MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
-                        } else {
-                            heroContentColor.copy(alpha = 0.14f)
-                        }
-                        Surface(
-                            onClick = action.onClick,
-                            shape = shape,
-                            color = pillContainer,
-                            contentColor = heroContentColor,
+        // Phase 5: the hero collapses before the active pane's LazyColumn scrolls and expands
+        // again from leftover scroll at the top (NestedScrollConnection below); a spring
+        // settles mid-way stops, and a tab switch or compact-row tap expands it. Heights are
+        // measured, so this works unchanged in the phone and the >=780dp split layout.
+        val density = LocalDensity.current
+        val (heroAlpha, compactAlpha) = CollapsingHeaderMath.crossfadeAlphas(headerState.collapseFraction)
+        val compactSplit = splitHeroActionIndices(heroActions.map { it.label })
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (headerState.expandedHeightPx > 0f) {
+                        Modifier.height(with(density) { headerState.headerHeightPx.toDp() })
+                    } else {
+                        Modifier
+                    },
+                )
+                .clip(RoundedCornerShape(28.dp)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .onSizeChanged { headerState.expandedHeightPx = it.height.toFloat() }
+                    .alpha(heroAlpha)
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            ) {
+                ExpressiveHeroCard(
+                    headline = server.name,
+                    subtitle = subtitleText.ifBlank { "${server.username}@${server.primaryHost}:${server.port}" },
+                    eyebrow = buildString {
+                        append(server.groupTag)
+                        append(" · ")
+                        append(runtime.health.name)
+                        runtime.latestMetric?.let { append(" · ${it.latencyMs}ms") }
+                    },
+                    containerColor = heroContainerColor,
+                    contentColor = heroContentColor,
+                    badgeIcon = heroBadgeIcon,
+                    badgeShape = ExpressiveBadgeShape.Cookie9Sided,
+                    actions = {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                Icon(
-                                    imageVector = action.icon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Text(
-                                    text = action.label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                )
+                            heroActions.forEachIndexed { index, action ->
+                                val shape = expressiveHorizontalGroupShape(index = index, count = heroActions.size)
+                                val pillContainer = if (action.isDestructive) {
+                                    MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
+                                } else {
+                                    heroContentColor.copy(alpha = 0.14f)
+                                }
+                                Surface(
+                                    onClick = action.onClick,
+                                    enabled = headerState.isHeroInteractive,
+                                    shape = shape,
+                                    color = pillContainer,
+                                    contentColor = heroContentColor,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = action.icon,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Text(
+                                            text = action.label,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-            },
-        )
+                    },
+                )
+            }
+            CompactDetailHeaderRow(
+                runtime = runtime,
+                containerColor = heroContainerColor,
+                contentColor = heroContentColor,
+                badgeIcon = heroBadgeIcon,
+                sshAction = heroActions.getOrNull(compactSplit.primaryIndex),
+                overflowActions = compactSplit.overflowIndices.mapNotNull { heroActions.getOrNull(it) },
+                isInteractive = headerState.isCompactInteractive,
+                onExpand = { headerState.expandAnimated() },
+                onMeasuredHeight = { headerState.compactHeightPx = it.toFloat() },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .alpha(compactAlpha),
+            )
+        }
 
         // Hero feedback (Phase 1C item 4): Wake/Poll/Reboot results land in the shared
         // status message; surface them here so they are not only visible in the edit sheet.
@@ -832,7 +890,11 @@ private fun ServerDetailPane(
             tabs.forEachIndexed { idx, title ->
                 val isSelected = selectedTab == idx
                 Surface(
-                    onClick = { selectedTab = idx },
+                    // Phase 5: switching tabs re-expands the collapsing header.
+                    onClick = {
+                        selectedTab = idx
+                        headerState.expandAnimated()
+                    },
                     shape = RoundedCornerShape(999.dp),
                     color = if (isSelected) {
                         MaterialTheme.colorScheme.primary
@@ -855,40 +917,49 @@ private fun ServerDetailPane(
             }
         }
 
-        when (selectedTab) {
-            0 -> ServerOverviewTab(
-                runtime = runtime,
-                prefs = allState.preferences,
-                onWake = { viewModel.wakeServer(server) },
-                onReboot = {
-                    if (requiresConfirmation(actionIsDestructive = true, prefs = allState.preferences)) {
-                        confirmPowerAction = true
-                    } else {
-                        viewModel.rebootOrShutdown(server, reboot = true)
-                    }
-                },
-                onShutdown = {
-                    if (requiresConfirmation(actionIsDestructive = true, prefs = allState.preferences)) {
-                        confirmPowerAction = false
-                    } else {
-                        viewModel.rebootOrShutdown(server, reboot = false)
-                    }
-                },
-                onOpenTerminal = { cmd -> onOpenTerminal(server.id, cmd) },
-            )
-            1 -> ContainersPane(
-                server = server,
-                onOpenExecShell = { id, cmd -> onOpenTerminal(id, cmd) },
-            )
-            2 -> ProcessesPane(server = server)
-            3 -> ServicesAndCronPane(server = server)
-            4 -> NetworkAndFilesTab(
-                server = server,
-                tunnels = allState.tunnels.filter { it.serverId == server.id },
-                activeTunnelIds = allState.activeTunnelIds,
-                prefs = allState.preferences,
-                viewModel = viewModel,
-            )
+        // One nested scroll connection for all five tabs: whichever LazyColumn is active
+        // dispatches through this container and drives the collapsing header above. No
+        // callbacks into the panes (the v4 approach, dropped in v5).
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .nestedScroll(headerConnection),
+        ) {
+            when (selectedTab) {
+                0 -> ServerOverviewTab(
+                    runtime = runtime,
+                    prefs = allState.preferences,
+                    onWake = { viewModel.wakeServer(server) },
+                    onReboot = {
+                        if (requiresConfirmation(actionIsDestructive = true, prefs = allState.preferences)) {
+                            confirmPowerAction = true
+                        } else {
+                            viewModel.rebootOrShutdown(server, reboot = true)
+                        }
+                    },
+                    onShutdown = {
+                        if (requiresConfirmation(actionIsDestructive = true, prefs = allState.preferences)) {
+                            confirmPowerAction = false
+                        } else {
+                            viewModel.rebootOrShutdown(server, reboot = false)
+                        }
+                    },
+                    onOpenTerminal = { cmd -> onOpenTerminal(server.id, cmd) },
+                )
+                1 -> ContainersPane(
+                    server = server,
+                    onOpenExecShell = { id, cmd -> onOpenTerminal(id, cmd) },
+                )
+                2 -> ProcessesPane(server = server)
+                3 -> ServicesAndCronPane(server = server)
+                4 -> NetworkAndFilesTab(
+                    server = server,
+                    tunnels = allState.tunnels.filter { it.serverId == server.id },
+                    activeTunnelIds = allState.activeTunnelIds,
+                    prefs = allState.preferences,
+                    viewModel = viewModel,
+                )
+            }
         }
     }
 
@@ -916,6 +987,148 @@ private fun ServerDetailPane(
             },
             onDismiss = { confirmDeleteNode = false },
         )
+    }
+}
+
+/**
+ * Compact (collapsed) detail header, Phase 5: node name, Cookie9Sided health badge, host +
+ * latency, the SSH action, and an overflow menu holding the remaining hero actions. The
+ * pinned tab pills below never collapse away. Tapping the row (outside the SSH pill and the
+ * overflow) re-expands the hero; interactive elements stay disabled while the row is still
+ * fading in so neither header half steals taps mid-transition.
+ */
+@Composable
+private fun CompactDetailHeaderRow(
+    runtime: ServerRuntimeState,
+    containerColor: Color,
+    contentColor: Color,
+    badgeIcon: ImageVector,
+    sshAction: HeroActionItem?,
+    overflowActions: List<HeroActionItem>,
+    isInteractive: Boolean,
+    onExpand: () -> Unit,
+    onMeasuredHeight: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val design = LocalGlassrackDesign.current
+    val server = runtime.server
+    val latency = runtime.latestMetric?.latencyMs
+    var overflowExpanded by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .onSizeChanged { onMeasuredHeight(it.height) }
+            .clickable(enabled = isInteractive, onClick = onExpand)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ExpressiveShapeBadge(
+            shape = ExpressiveBadgeShape.Cookie9Sided,
+            containerColor = containerColor,
+            contentColor = contentColor,
+            size = 30.dp,
+            icon = badgeIcon,
+            contentDescription = runtime.health.name.lowercase().replaceFirstChar { it.uppercase() },
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Text(
+                text = server.name,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = buildString {
+                    append(server.username)
+                    append("@")
+                    append(server.primaryHost)
+                    latency?.let { append(" · ${it}ms") }
+                },
+                style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (sshAction != null) {
+            Surface(
+                onClick = sshAction.onClick,
+                enabled = isInteractive,
+                shape = RoundedCornerShape(999.dp),
+                color = contentColor.copy(alpha = 0.14f),
+                contentColor = contentColor,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        imageVector = sshAction.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        text = sshAction.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Box {
+            IconButton(
+                onClick = { overflowExpanded = true },
+                enabled = isInteractive,
+            ) {
+                Icon(
+                    Icons.Rounded.MoreVert,
+                    contentDescription = "More actions for ${server.name}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            DropdownMenu(
+                expanded = overflowExpanded,
+                onDismissRequest = { overflowExpanded = false },
+            ) {
+                overflowActions.forEach { action ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = action.label,
+                                color = if (action.isDestructive) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    Color.Unspecified
+                                },
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = action.icon,
+                                contentDescription = null,
+                                tint = if (action.isDestructive) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        },
+                        onClick = {
+                            overflowExpanded = false
+                            action.onClick()
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 

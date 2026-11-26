@@ -15,6 +15,7 @@ kotlin {
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions { jvmTarget = JvmTarget.JVM_11 }
+        withHostTest {}
     }
     sourceSets {
         commonMain.dependencies {
@@ -36,6 +37,10 @@ kotlin {
             implementation(libs.koin.compose.viewmodel)
             implementation(libs.filekit.dialogs.compose)
             implementation(libs.kermit)
+        }
+        getByName("androidHostTest").dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.junit)
         }
     }
 }
