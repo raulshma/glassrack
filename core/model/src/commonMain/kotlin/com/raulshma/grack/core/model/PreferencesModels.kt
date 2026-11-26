@@ -91,7 +91,7 @@ data class UserPreferences(
 
 @Serializable
 data class GlassrackBackupPayload(
-    val version: Int = 1,
+    val version: Int = BACKUP_FORMAT_VERSION,
     val exportedAtEpochMs: Long,
     val servers: List<Server>,
     val dashboards: List<DashboardProfile>,
@@ -100,7 +100,16 @@ data class GlassrackBackupPayload(
     val alertRules: List<AlertRule>,
     val preferences: UserPreferences,
     val sshKeyMetadata: List<SshKeyRecord>,
-)
+    val tunnels: List<PortForwardTunnel> = emptyList(),
+) {
+    companion object {
+        /**
+         * v2 adds `tunnels`. v1 payloads (no `tunnels` field) are still accepted on import;
+         * their tunnels simply default to empty.
+         */
+        const val BACKUP_FORMAT_VERSION: Int = 2
+    }
+}
 
 @Serializable
 data class EncryptedBackupBundle(

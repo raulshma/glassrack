@@ -16,6 +16,7 @@ kotlin {
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions { jvmTarget = JvmTarget.JVM_11 }
+        withHostTest {}
     }
     sourceSets {
         commonMain.dependencies {
@@ -24,6 +25,10 @@ kotlin {
             api(libs.kotlinx.collections.immutable)
             api(libs.kotlinx.coroutines.core)
             api(libs.kotlinx.datetime)
+        }
+        getByName("androidHostTest").dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.junit)
         }
     }
 }

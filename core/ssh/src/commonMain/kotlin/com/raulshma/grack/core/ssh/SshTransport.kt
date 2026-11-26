@@ -38,6 +38,7 @@ interface SshSessionClient {
         server: Server,
         allServers: List<Server>,
         trustFingerprintOnFirstConnect: Boolean = false,
+        transientPassword: String? = null,
     ): Result<HostKeyChallenge?>
 
     suspend fun execute(
@@ -71,6 +72,10 @@ interface SshSessionClient {
         timeoutMs: Long = 15_000L,
     ): List<RemoteFileEntry>
 
+    /**
+     * Reads [remotePath] as text. Refused with [TextFileGuardException] when the file is
+     * larger than 1 MiB or contains NUL bytes (binary payloads must not enter the editor).
+     */
     suspend fun readFileText(
         server: Server,
         allServers: List<Server>,
@@ -78,13 +83,21 @@ interface SshSessionClient {
         timeoutMs: Long = 15_000L,
     ): String
 
+    /**
+     * Writes [newContent] to [remotePath], first capturing the previous content at
+     * `<remotePath>.bak`. Returns true when a `.bak` snapshot was taken (false when the
+     * target did not exist yet, so there was nothing to back up). If the backup itself
+     * fails, nothing is written and an exception is thrown, so the original file is never
+     * lost. Payloads refused by [TextFileGuard] (over 1 MiB or containing NUL bytes) are
+     * rejected before any byte reaches the host. Timeout semantics of [timeoutMs] apply.
+     */
     suspend fun writeFileTextWithBackup(
         server: Server,
         allServers: List<Server>,
         remotePath: String,
         newContent: String,
         timeoutMs: Long = 15_000L,
-    )
+    ): Boolean
 
     suspend fun deployPublicKey(
         server: Server,

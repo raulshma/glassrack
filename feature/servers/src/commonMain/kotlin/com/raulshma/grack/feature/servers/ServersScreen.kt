@@ -57,6 +57,7 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -103,14 +104,15 @@ import com.raulshma.grack.core.designsystem.WavyMetricBar
 import com.raulshma.grack.core.designsystem.expressiveHorizontalGroupShape
 import com.raulshma.grack.core.designsystem.monoNumericStyle
 import com.raulshma.grack.core.model.AuthType
-import com.raulshma.grack.core.model.ConfirmationLevel
 import com.raulshma.grack.core.model.Formatters
 import com.raulshma.grack.core.model.HostKeyChallenge
+import com.raulshma.grack.core.model.PortForwardTunnel
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.SshKeyRecord
 import com.raulshma.grack.core.model.UserPreferences
+import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.feature.containers.ContainersPane
 import com.raulshma.grack.feature.processes.ProcessesPane
 import com.raulshma.grack.feature.processes.ServicesAndCronPane
@@ -263,8 +265,8 @@ fun ServersScreen(
             testStatus = state.testStatusMessage,
             isTesting = state.isTestingConnection,
             onTest = { srv, pw -> viewModel.testConnection(srv, pw, trustFirst = false) },
-            onSave = { srv, pw ->
-                viewModel.saveServer(srv, pw)
+            onSave = { srv, pw, clearSavedPassword ->
+                viewModel.saveServer(srv, pw, clearSavedPassword)
                 showAddEditWizard = null
             },
             onDismiss = { showAddEditWizard = null },
@@ -275,7 +277,7 @@ fun ServersScreen(
         HostKeyChallengeDialog(
             challenge = challenge,
             onTrust = { viewModel.acceptChallenge(challenge) },
-            onDismiss = viewModel::dismissChallenge,
+            onDismiss = { viewModel.dismissChallenge(challenge) },
         )
     }
 }
@@ -641,10 +643,10 @@ private fun ServerDetailPane(
                 icon = Icons.Rounded.Delete,
                 isDestructive = true,
                 onClick = {
-                    if (allState.preferences.destructiveConfirmation == ConfirmationLevel.NONE) {
-                        onDelete()
-                    } else {
+                    if (requiresConfirmation(actionIsDestructive = true, prefs = allState.preferences)) {
                         confirmDeleteNode = true
+                    } else {
+                        onDelete()
                     }
                 },
             ),
@@ -652,6 +654,40 @@ private fun ServerDetailPane(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
+        // Blocked host-key challenge: the dialog is dismissed, but the node keeps failing its
+        // polls until the key is reviewed — surface a persistent banner instead of silence.
+        runtime.pendingHostKeyChallenge?.let { challenge ->
+            if (challenge == allState.dismissedHostKeyChallenge) {
+                ExpressiveCard(
+                    tonalContainerColor = design.statusWarnContainer,
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Security,
+                            contentDescription = null,
+                            tint = design.onStatusWarnContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = "Host key needs review — connections to ${server.name} stay blocked",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = design.onStatusWarnContainer,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { viewModel.reviewHostKey(challenge) }) {
+                            Text("Review host key")
+                        }
+                    }
+                }
+            }
+        }
         if (showBack) {
             Row(
                 modifier = Modifier
@@ -773,8 +809,20 @@ private fun ServerDetailPane(
                 runtime = runtime,
                 prefs = allState.preferences,
                 onWake = { viewModel.wakeServer(server) },
-                onReboot = { confirmPowerAction = true },
-                onShutdown = { confirmPowerAction = false },
+                onReboot = {
+                    if (requiresConfirmation(actionIsDestructive = true, prefs = allState.preferences)) {
+                        confirmPowerAction = true
+                    } else {
+                        viewModel.rebootOrShutdown(server, reboot = true)
+                    }
+                },
+                onShutdown = {
+                    if (requiresConfirmation(actionIsDestructive = true, prefs = allState.preferences)) {
+                        confirmPowerAction = false
+                    } else {
+                        viewModel.rebootOrShutdown(server, reboot = false)
+                    }
+                },
                 onOpenTerminal = { cmd -> onOpenTerminal(server.id, cmd) },
             )
             1 -> ContainersPane(
@@ -1335,7 +1383,7 @@ private fun MetricPillBadge(
 @Composable
 private fun NetworkAndFilesTab(
     server: Server,
-    tunnels: List<com.raulshma.grack.core.model.PortForwardTunnel>,
+    tunnels: List<PortForwardTunnel>,
     activeTunnelIds: Set<String>,
     prefs: UserPreferences,
     viewModel: ServersViewModel,
@@ -1343,6 +1391,7 @@ private fun NetworkAndFilesTab(
     val netFiles by viewModel.netFilesState.collectAsState()
     val design = LocalGlassrackDesign.current
     var showNewTunnel by remember { mutableStateOf(false) }
+    var pendingDeleteTunnel by remember { mutableStateOf<PortForwardTunnel?>(null) }
 
     LaunchedEffect(server.id) {
         viewModel.loadNetworkAndFiles(server, "/")
@@ -1449,10 +1498,31 @@ private fun NetworkAndFilesTab(
                                             )
                                         }
                                     }
-                                    Switch(
-                                        checked = active,
-                                        onCheckedChange = { viewModel.toggleTunnel(tun, server) },
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        IconButton(
+                                            onClick = {
+                                                if (requiresConfirmation(actionIsDestructive = true, prefs = prefs)) {
+                                                    pendingDeleteTunnel = tun
+                                                } else {
+                                                    viewModel.deleteTunnel(tun, server)
+                                                }
+                                            },
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.Delete,
+                                                contentDescription = "Delete tunnel ${tun.label}",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                        Switch(
+                                            checked = active,
+                                            onCheckedChange = { viewModel.toggleTunnel(tun, server) },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1793,6 +1863,20 @@ private fun NetworkAndFilesTab(
             },
         )
     }
+
+    pendingDeleteTunnel?.let { tun ->
+        ActionSafetyDialog(
+            title = "Delete tunnel ${tun.label}?",
+            description = "Removes the forward localhost:${tun.localPort} -> ${tun.remoteHost}:${tun.remotePort} " +
+                "from ${server.name}. An active tunnel is closed first.",
+            confirmationLevel = prefs.destructiveConfirmation,
+            onConfirm = {
+                pendingDeleteTunnel = null
+                viewModel.deleteTunnel(tun, server)
+            },
+            onDismiss = { pendingDeleteTunnel = null },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -1805,7 +1889,7 @@ private fun AddEditServerSheet(
     testStatus: String?,
     isTesting: Boolean,
     onTest: (Server, String?) -> Unit,
-    onSave: (Server, String?) -> Unit,
+    onSave: (Server, String?, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(initial.name) }
@@ -1819,10 +1903,13 @@ private fun AddEditServerSheet(
     }
     var selectedKeyId by remember { mutableStateOf(initial.sshKeyId ?: sshKeys.firstOrNull()?.id) }
     var password by remember { mutableStateOf("") }
+    var clearSavedPassword by remember { mutableStateOf(false) }
     var macAddress by remember { mutableStateOf(initial.macAddress) }
     var jumpHostId by remember { mutableStateOf(initial.jumpHostServerId) }
     var pollInterval by remember { mutableStateOf(initial.pollIntervalSec.toString()) }
     var notes by remember { mutableStateOf(initial.notes) }
+
+    val hasStoredPassword = !isNew && initial.authType == AuthType.PASSWORD && initial.credentialVaultId != null
 
     fun buildServer(): Server = initial.copy(
         name = name.trim().ifBlank { primaryHost.trim() },
@@ -1967,12 +2054,39 @@ private fun AddEditServerSheet(
                 } else {
                     OutlinedTextField(
                         value = password,
-                        onValueChange = { password = it },
-                        label = { Text("Password (stored in Tink Keystore Vault)") },
+                        onValueChange = {
+                            password = it
+                            if (it.isNotEmpty()) clearSavedPassword = false
+                        },
+                        label = {
+                            Text(
+                                if (hasStoredPassword) {
+                                    "New Password (leave blank to keep stored)"
+                                } else {
+                                    "Password (stored in Tink Keystore Vault)"
+                                },
+                            )
+                        },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (hasStoredPassword) {
+                        TextButton(
+                            onClick = {
+                                clearSavedPassword = !clearSavedPassword
+                                if (clearSavedPassword) password = ""
+                            },
+                        ) {
+                            Text(
+                                if (clearSavedPassword) {
+                                    "Stored password will be cleared on save — undo"
+                                } else {
+                                    "Clear stored password"
+                                },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -2111,7 +2225,13 @@ private fun AddEditServerSheet(
                     Text("Test SSH")
                 }
                 Button(
-                    onClick = { onSave(buildServer(), password.takeIf { it.isNotEmpty() }) },
+                    onClick = {
+                        onSave(
+                            buildServer(),
+                            password.takeIf { it.isNotEmpty() },
+                            clearSavedPassword,
+                        )
+                    },
                     enabled = primaryHost.isNotBlank(),
                     shape = RoundedCornerShape(999.dp),
                     modifier = Modifier.weight(1f),

@@ -11,6 +11,8 @@ import com.raulshma.grack.core.model.ProcessSignal
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.SystemdUnit
 import com.raulshma.grack.core.model.UserPreferences
+import com.raulshma.grack.core.model.isDestructiveServiceVerb
+import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.core.security.BiometricGate
 import com.raulshma.grack.core.ssh.HomelabController
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +33,7 @@ data class ProcessesUiState(
     val query: String = "",
     val sort: ProcessSort = ProcessSort.CPU,
     val pendingSignal: Pair<ProcessInfo, ProcessSignal>? = null,
+    val pendingServiceVerb: Pair<SystemdUnit, String>? = null,
     val journalUnit: SystemdUnit? = null,
     val journalLogs: String = "",
     val message: String? = null,
@@ -81,8 +84,10 @@ class ProcessesViewModel(
             _uiState.update { it.copy(message = "Blocked: Safe Read-Only Mode is active") }
             return
         }
-        val gated = (signal.isDestructive || proc.pid <= 10) &&
-            prefs.destructiveConfirmation != ConfirmationLevel.NONE
+        val gated = requiresConfirmation(
+            actionIsDestructive = signal.isDestructive || proc.pid <= 10,
+            prefs = prefs,
+        )
         if (gated) {
             if (prefs.destructiveConfirmation == ConfirmationLevel.BIOMETRIC && biometricGate.canAuthenticate()) {
                 viewModelScope.launch {
@@ -128,10 +133,29 @@ class ProcessesViewModel(
     }
 
     fun performServiceVerb(server: Server, unit: SystemdUnit, verb: String) {
-        if (preferences.value.safeReadOnlyMode) {
+        val prefs = preferences.value
+        if (prefs.safeReadOnlyMode) {
             _uiState.update { it.copy(message = "Blocked: Safe Read-Only Mode is active") }
             return
         }
+        if (requiresConfirmation(actionIsDestructive = isDestructiveServiceVerb(verb), prefs = prefs)) {
+            _uiState.update { it.copy(pendingServiceVerb = unit to verb) }
+            return
+        }
+        executeServiceVerb(server, unit, verb)
+    }
+
+    fun confirmServiceVerb(server: Server) {
+        val pending = _uiState.value.pendingServiceVerb ?: return
+        _uiState.update { it.copy(pendingServiceVerb = null) }
+        executeServiceVerb(server, pending.first, pending.second)
+    }
+
+    fun dismissServiceVerb() {
+        _uiState.update { it.copy(pendingServiceVerb = null) }
+    }
+
+    private fun executeServiceVerb(server: Server, unit: SystemdUnit, verb: String) {
         viewModelScope.launch {
             val res = controller.performSystemdAction(server, unit.name, verb)
             _uiState.update { it.copy(message = res.stdout.ifBlank { "Exit ${res.exitCode}" }) }

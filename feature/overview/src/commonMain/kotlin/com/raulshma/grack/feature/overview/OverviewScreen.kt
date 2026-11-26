@@ -112,6 +112,7 @@ import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.TileType
 import com.raulshma.grack.core.model.UserPreferences
+import com.raulshma.grack.core.designsystem.ActionSafetyDialog
 import org.koin.compose.viewmodel.koinViewModel
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyGridState
@@ -489,6 +490,18 @@ fun OverviewScreen(
                 onOpenServerDetail(serverId)
             },
             onDismiss = { showAlertsSheet = false },
+        )
+    }
+
+    // Dashboard tile taps honour the destructive-confirmation gate like every pane.
+    state.pendingTileContainerAction?.let { pending ->
+        ActionSafetyDialog(
+            title = "${pending.action.label} ${pending.containerName}?",
+            description = "This will ${pending.action.label.lowercase()} container '${pending.containerName}' " +
+                "on ${pending.server.name}.",
+            confirmationLevel = state.preferences.destructiveConfirmation,
+            onConfirm = { viewModel.confirmTileContainerAction() },
+            onDismiss = viewModel::dismissTileContainerAction,
         )
     }
 }

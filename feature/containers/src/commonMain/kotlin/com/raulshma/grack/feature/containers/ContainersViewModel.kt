@@ -11,9 +11,12 @@ import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerState
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.UserPreferences
+import com.raulshma.grack.core.model.isDestructiveComposeVerb
+import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.core.security.BiometricGate
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.core.ssh.TelemetryParsers
+import com.raulshma.grack.core.ssh.binaryName
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -40,6 +43,8 @@ data class ContainersUiState(
     val logsText: String = "",
     val inspectContainer: ContainerInfo? = null,
     val pendingConfirmAction: Pair<ContainerInfo, ContainerAction>? = null,
+    val pendingConfirmStackVerb: Pair<ComposeStack, String>? = null,
+    val pendingConfirmPrune: Boolean = false,
     val feedbackMessage: String? = null,
 )
 
@@ -84,7 +89,7 @@ class ContainersViewModel(
                     server = server,
                     category = AuditCategory.CONTAINER,
                     actionTitle = "Blocked ${action.label} on ${container.name}",
-                    command = "docker ${action.name.lowercase()} ${container.name}",
+                    command = "${container.runtime.binaryName} ${action.name.lowercase()} ${container.name}",
                     reason = "Safe Read-Only Mode is active",
                 )
             }
@@ -92,8 +97,10 @@ class ContainersViewModel(
             return
         }
 
-        val requiresGate = (action.isDestructive || container.isCritical) &&
-            prefs.destructiveConfirmation != ConfirmationLevel.NONE
+        val requiresGate = requiresConfirmation(
+            actionIsDestructive = action.isDestructive || container.isCritical,
+            prefs = prefs,
+        )
 
         if (requiresGate) {
             if (prefs.destructiveConfirmation == ConfirmationLevel.BIOMETRIC && biometricGate.canAuthenticate()) {
@@ -109,7 +116,7 @@ class ContainersViewModel(
                             server = server,
                             category = AuditCategory.CONTAINER,
                             actionTitle = "Cancelled ${action.label} on ${container.name}",
-                            command = "docker ${action.name.lowercase()} ${container.name}",
+                            command = "${container.runtime.binaryName} ${action.name.lowercase()} ${container.name}",
                             reason = "Biometric confirmation cancelled",
                         )
                         _uiState.update { it.copy(feedbackMessage = "Biometric confirmation cancelled") }
@@ -155,10 +162,29 @@ class ContainersViewModel(
     }
 
     fun performComposeStackVerb(server: Server, stack: ComposeStack, verb: String) {
-        if (preferences.value.safeReadOnlyMode) {
+        val prefs = preferences.value
+        if (prefs.safeReadOnlyMode) {
             _uiState.update { it.copy(feedbackMessage = "Blocked: Safe Read-Only Mode is enabled") }
             return
         }
+        if (requiresConfirmation(actionIsDestructive = isDestructiveComposeVerb(verb), prefs = prefs)) {
+            _uiState.update { it.copy(pendingConfirmStackVerb = stack to verb) }
+            return
+        }
+        executeStackVerb(server, stack, verb)
+    }
+
+    fun confirmStackVerb(server: Server) {
+        val pending = _uiState.value.pendingConfirmStackVerb ?: return
+        _uiState.update { it.copy(pendingConfirmStackVerb = null) }
+        executeStackVerb(server, pending.first, pending.second)
+    }
+
+    fun dismissStackVerb() {
+        _uiState.update { it.copy(pendingConfirmStackVerb = null) }
+    }
+
+    private fun executeStackVerb(server: Server, stack: ComposeStack, verb: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             val res = controller.performComposeStackAction(server, stack.projectName, stack.workingDir, verb)
@@ -176,16 +202,36 @@ class ContainersViewModel(
     }
 
     fun pruneUnused(server: Server) {
-        if (preferences.value.safeReadOnlyMode) {
+        val prefs = preferences.value
+        if (prefs.safeReadOnlyMode) {
             _uiState.update { it.copy(feedbackMessage = "Blocked: Safe Read-Only Mode is enabled") }
             return
         }
+        if (requiresConfirmation(actionIsDestructive = true, prefs = prefs)) {
+            _uiState.update { it.copy(pendingConfirmPrune = true) }
+            return
+        }
+        executePrune(server)
+    }
+
+    fun confirmPrune(server: Server) {
+        _uiState.update { it.copy(pendingConfirmPrune = false) }
+        executePrune(server)
+    }
+
+    fun dismissPrune() {
+        _uiState.update { it.copy(pendingConfirmPrune = false) }
+    }
+
+    private fun executePrune(server: Server) {
         viewModelScope.launch {
+            // Prune the runtime the node actually uses instead of a hardcoded docker.
+            val bin = controller.containerRuntimeFor(server).binaryName
             val res = controller.executeAuditedAction(
                 server = server,
                 category = AuditCategory.CONTAINER,
-                actionTitle = "Docker System Prune",
-                command = "docker system prune -f",
+                actionTitle = "${bin.replaceFirstChar { it.uppercase() }} System Prune",
+                command = "$bin system prune -f",
             )
             _uiState.update { it.copy(feedbackMessage = "Prune completed (exit ${res.exitCode})") }
         }
@@ -194,7 +240,7 @@ class ContainersViewModel(
     fun openLogs(server: Server, container: ContainerInfo) {
         viewModelScope.launch {
             _uiState.update { it.copy(logsContainer = container, logsText = "Streaming logs for ${container.name}...") }
-            val logs = controller.fetchContainerLogs(server, container.name)
+            val logs = controller.fetchContainerLogs(server, container)
             _uiState.update { it.copy(logsText = logs.ifBlank { "(no log output)" }) }
         }
     }

@@ -35,6 +35,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -42,6 +43,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
+
+/** The engine binary to invoke for this runtime (podman / docker); used by UI and audit previews too. */
+val ContainerRuntime.binaryName: String
+    get() = when (this) {
+        ContainerRuntime.PODMAN -> "podman"
+        else -> "docker"
+    }
 
 class HomelabController(
     private val repository: GlassrackRepository,
@@ -269,6 +277,14 @@ class HomelabController(
         }
     }
 
+    suspend fun testServerConnection(
+        server: Server,
+        trustFirst: Boolean,
+        transientPassword: String? = null,
+    ): Result<HostKeyChallenge?> {
+        return sshClient.testConnection(server, latestServers, trustFingerprintOnFirstConnect = trustFirst, transientPassword = transientPassword)
+    }
+
     suspend fun acceptHostKeyChallenge(challenge: HostKeyChallenge) {
         repository.updateHostFingerprint(challenge.serverId, challenge.fingerprintSha256)
         _runtimeStates.update { map ->
@@ -276,10 +292,6 @@ class HomelabController(
             map + (challenge.serverId to cur.copy(pendingHostKeyChallenge = null, lastError = null))
         }
         latestServers.firstOrNull { it.id == challenge.serverId }?.let { pollServerOnce(it) }
-    }
-
-    suspend fun testServerConnection(server: Server, trustFirst: Boolean): Result<HostKeyChallenge?> {
-        return sshClient.testConnection(server, latestServers, trustFingerprintOnFirstConnect = trustFirst)
     }
 
     suspend fun executeAuditedAction(
@@ -416,6 +428,14 @@ class HomelabController(
         return TelemetryParsers.parseContainers(res.stdout, runtime)
     }
 
+    /** The container engine binary to drive for [server]: podman only when docker is absent. */
+    fun containerRuntimeFor(server: Server): ContainerRuntime =
+        if (!server.capabilities.hasDocker && server.capabilities.hasPodman) {
+            ContainerRuntime.PODMAN
+        } else {
+            ContainerRuntime.DOCKER
+        }
+
     suspend fun performContainerAction(
         server: Server,
         container: ContainerInfo,
@@ -435,7 +455,7 @@ class HomelabController(
                 val dir = container.composeWorkingDir
                 val svc = container.composeService
                 if (!dir.isNullOrBlank() && !svc.isNullOrBlank()) {
-                    "cd '$dir' && docker compose pull '$svc' && docker compose up -d '$svc'"
+                    "cd '$dir' && $bin compose pull '$svc' && $bin compose up -d '$svc'"
                 } else {
                     "$bin pull '${container.image}'"
                 }
@@ -460,10 +480,12 @@ class HomelabController(
         workingDir: String?,
         verb: String,
     ): SshExecResult {
+        // Compose binary follows the node's detected runtime instead of a hardcoded docker.
+        val composeBin = containerRuntimeFor(server).binaryName
         val cmd = if (!workingDir.isNullOrBlank()) {
-            "cd '$workingDir' && docker compose $verb"
+            "cd '$workingDir' && $composeBin compose $verb"
         } else {
-            "docker compose -p '$projectName' $verb"
+            "$composeBin compose -p '$projectName' $verb"
         }
         val isStackUpdate = verb.trim().startsWith("pull") || verb.trim().startsWith("up")
         val result = executeAuditedAction(
@@ -479,8 +501,10 @@ class HomelabController(
         return result
     }
 
-    suspend fun fetchContainerLogs(server: Server, containerName: String, tail: Int = 200): String {
-        val res = sshClient.execute(server, latestServers, "docker logs --tail $tail '$containerName' 2>&1", 15_000L)
+    /** Fetches container logs via the container's own runtime binary, not a hardcoded docker. */
+    suspend fun fetchContainerLogs(server: Server, container: ContainerInfo, tail: Int = 200): String {
+        val cmd = "${container.runtime.binaryName} logs --tail $tail '${container.name}' 2>&1"
+        val res = sshClient.execute(server, latestServers, cmd, 15_000L)
         return res.stdout.ifBlank { res.stderr }
     }
 
@@ -517,21 +541,86 @@ class HomelabController(
         return sshClient.readFileText(server, latestServers, remotePath)
     }
 
+    /**
+     * Saves [newContent] to [remotePath] with a `.bak` snapshot of the previous content.
+     * Enforces Safe Read-Only Mode, records the real duration and outcome (a failed or
+     * timed-out save is audited as such), and rethrows so callers can surface the failure.
+     * The transport aborts without writing when the `.bak` snapshot itself fails.
+     */
     suspend fun saveFileWithBackup(server: Server, remotePath: String, newContent: String) {
-        sshClient.writeFileTextWithBackup(server, latestServers, remotePath, newContent)
-        repository.recordAudit(
-            timestampEpochMs = currentTimeEpochMs(),
-            serverId = server.id,
-            serverNameSnapshot = server.name,
-            category = AuditCategory.CONFIG,
-            actionTitle = "Saved SFTP File: $remotePath",
-            rawCommand = "sftp put $remotePath (backup: $remotePath.bak)",
-            triggerSource = TriggerSource.UI,
-            outcome = AuditOutcome.SUCCESS,
-            exitCode = 0,
-            durationMs = 120L,
-            outputSnippet = "Updated ${newContent.length} bytes with .bak snapshot.",
-        )
+        if (repository.preferences.first().safeReadOnlyMode) {
+            val reason = "Blocked: Safe Read-Only Mode is active"
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Save SFTP File: $remotePath",
+                rawCommand = "sftp put $remotePath (backup: $remotePath.bak)",
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.BLOCKED,
+                exitCode = null,
+                durationMs = 0L,
+                outputSnippet = reason,
+            )
+            throw IllegalStateException(reason)
+        }
+        val started = currentTimeEpochMs()
+        try {
+            val backupCreated = sshClient.writeFileTextWithBackup(server, latestServers, remotePath, newContent)
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Saved SFTP File: $remotePath",
+                rawCommand = "sftp put $remotePath (backup: $remotePath.bak)",
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.SUCCESS,
+                exitCode = 0,
+                durationMs = currentTimeEpochMs() - started,
+                outputSnippet = if (backupCreated) {
+                    "Updated ${newContent.length} bytes with .bak snapshot."
+                } else {
+                    "Updated ${newContent.length} bytes (new file, no prior content to back up)."
+                },
+            )
+        } catch (timeoutEx: TimeoutCancellationException) {
+            recordFileSaveFailure(server, remotePath, started, AuditOutcome.TIMEOUT, timeoutEx.message)
+            throw timeoutEx
+        } catch (cancelled: CancellationException) {
+            recordFileSaveFailure(server, remotePath, started, AuditOutcome.CANCELLED, cancelled.message)
+            throw cancelled
+        } catch (t: Throwable) {
+            recordFileSaveFailure(server, remotePath, started, AuditOutcome.FAILED, t.message)
+            throw t
+        }
+    }
+
+    private suspend fun recordFileSaveFailure(
+        server: Server,
+        remotePath: String,
+        startedEpochMs: Long,
+        outcome: AuditOutcome,
+        reason: String?,
+    ) {
+        // NonCancellable: the calling scope may already be cancelled; the audit entry must
+        // still be written (same reasoning as recordUnfinishedAction).
+        withContext(NonCancellable) {
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Save SFTP File: $remotePath",
+                rawCommand = "sftp put $remotePath (backup: $remotePath.bak)",
+                triggerSource = TriggerSource.UI,
+                outcome = outcome,
+                exitCode = -1,
+                durationMs = currentTimeEpochMs() - startedEpochMs,
+                outputSnippet = reason.orEmpty(),
+            )
+        }
     }
 
     suspend fun deployPublicKey(server: Server, publicKey: String): SshExecResult {

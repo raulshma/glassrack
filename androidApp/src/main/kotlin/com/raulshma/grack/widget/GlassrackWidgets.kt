@@ -36,6 +36,7 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.raulshma.grack.MainActivity
 import com.raulshma.grack.core.database.GlassrackRepository
+import com.raulshma.grack.core.model.AuditCategory
 import com.raulshma.grack.core.model.ContainerAction
 import com.raulshma.grack.core.model.ContainerInfo
 import com.raulshma.grack.core.model.ContainerState
@@ -44,6 +45,7 @@ import com.raulshma.grack.core.model.MetricSnapshot
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.TriggerSource
+import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.worker.TelemetryRefreshWorker
 import com.patrykandpatrick.vico.compose.cartesian.data.CartesianChartModel
@@ -114,8 +116,21 @@ class ToggleContainerWidgetCallback : ActionCallback {
         val server = repo.getServerById(serverId) ?: return
         val prefs = repo.preferences.first()
         if (prefs.safeReadOnlyMode) return
-        val container = ctrl.fetchContainers(server).firstOrNull { it.name == ctrName } ?: return
         val action = ContainerAction.valueOf(actionName)
+        if (requiresConfirmation(actionIsDestructive = action.isDestructive, prefs = prefs)) {
+            // A widget tap cannot present the confirmation UI; it must not silently
+            // bypass the gate either, so the destructive tap is recorded as BLOCKED.
+            ctrl.recordBlockedAction(
+                server = server,
+                category = AuditCategory.CONTAINER,
+                actionTitle = "Blocked ${action.label} on $ctrName (widget)",
+                command = "${action.name.lowercase()} $ctrName",
+                reason = "Destructive widget tap requires in-app confirmation",
+                triggerSource = TriggerSource.WIDGET,
+            )
+            return
+        }
+        val container = ctrl.fetchContainers(server).firstOrNull { it.name == ctrName } ?: return
         ctrl.performContainerAction(server, container, action, TriggerSource.WIDGET)
         TelemetryRefreshWorker.refreshAllWidgets(context)
     }

@@ -644,6 +644,17 @@ fun ServicesAndCronPane(
             }
         }
     }
+
+    state.pendingServiceVerb?.let { (unit, verb) ->
+        ActionSafetyDialog(
+            title = "${verb.replaceFirstChar { it.uppercase() }} ${unit.name}?",
+            description = "Runs 'systemctl $verb ${unit.name}' on ${server.name}. " +
+                "Stopping or restarting a unit interrupts its service until it comes back.",
+            confirmationLevel = prefs.destructiveConfirmation,
+            onConfirm = { viewModel.confirmServiceVerb(server) },
+            onDismiss = viewModel::dismissServiceVerb,
+        )
+    }
 }
 
 @Composable

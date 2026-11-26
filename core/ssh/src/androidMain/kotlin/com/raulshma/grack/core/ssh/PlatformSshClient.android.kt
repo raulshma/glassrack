@@ -95,6 +95,7 @@ actual class PlatformSshClient actual constructor(
         server: Server,
         allServers: List<Server>,
         trustFingerprintOnFirstConnect: Boolean,
+        transientPassword: String? = null,
     ): PooledSession = withContext(Dispatchers.IO) {
         var jumpSession: Session? = null
         var targetHost = selectReachableHost(server)
@@ -126,9 +127,12 @@ actual class PlatformSshClient actual constructor(
         }
 
         val session = jsch.getSession(server.username, targetHost, targetPort)
-        if (server.authType == AuthType.PASSWORD && !server.credentialVaultId.isNullOrBlank()) {
-            val pw = vault.getSecret(server.credentialVaultId!!)
-            if (pw != null) session.setPassword(pw)
+        // A transient password (handshake-only connectivity test) wins over the stored one
+        // and is never persisted anywhere.
+        val effectivePassword = transientPassword
+            ?: server.credentialVaultId?.let { vault.getSecret(it) }
+        if (server.authType == AuthType.PASSWORD && effectivePassword != null) {
+            session.setPassword(effectivePassword)
         }
         // Host key is verified by GrackHostKeyRepository during key exchange, before login.
         session.setConfig("StrictHostKeyChecking", "yes")
@@ -136,7 +140,7 @@ actual class PlatformSshClient actual constructor(
         session.serverAliveInterval = 30_000
         session.serverAliveCountMax = 3
 
-        val pwForPrompt = server.credentialVaultId?.let { vault.getSecret(it) }
+        val pwForPrompt = effectivePassword
         val hostKeyRepository = GrackHostKeyRepository(
             serverId = server.id,
             host = targetHost,
@@ -202,12 +206,20 @@ actual class PlatformSshClient actual constructor(
         server: Server,
         allServers: List<Server>,
         trustFingerprintOnFirstConnect: Boolean,
+        transientPassword: String?,
     ): Result<HostKeyChallenge?> = runCatching {
+        // Probe with a dedicated, never-pooled session: the test must validate the node as
+        // configured right now (including a transient password that was never persisted),
+        // and must not leave a half-configured draft node behind in the session pool.
+        var probe: PooledSession? = null
         try {
-            getOrConnect(server, allServers, trustFingerprintOnFirstConnect)
+            probe = openNewSession(server, allServers, trustFingerprintOnFirstConnect, transientPassword)
             null
         } catch (e: HostKeyChallengeException) {
             e.challenge
+        } finally {
+            runCatching { probe?.session?.disconnect() }
+            runCatching { probe?.jumpSession?.disconnect() }
         }
     }
 
@@ -402,7 +414,10 @@ actual class PlatformSshClient actual constructor(
         remotePath: String,
         timeoutMs: Long,
     ): String = runSftpOperation(server, allServers, timeoutMs) { sftp ->
-        sftp.get(remotePath).use { it.readBytes().decodeToString() }
+        val bytes = sftp.get(remotePath).use { it.readBytes() }
+        // Binary guard: over 1 MiB or containing NUL bytes never enters the text editor.
+        TextFileGuard.validate(bytes, remotePath)
+        bytes.decodeToString()
     }
 
     override suspend fun writeFileTextWithBackup(
@@ -411,14 +426,23 @@ actual class PlatformSshClient actual constructor(
         remotePath: String,
         newContent: String,
         timeoutMs: Long,
-    ) {
-        runSftpOperation(server, allServers, timeoutMs) { sftp ->
-            runCatching {
-                val current = sftp.get(remotePath).use { it.readBytes() }
-                sftp.put(ByteArrayInputStream(current), "$remotePath.bak", ChannelSftp.OVERWRITE)
+    ): Boolean = runSftpOperation(server, allServers, timeoutMs) { sftp ->
+        val payload = newContent.encodeToByteArray()
+        TextFileGuard.validate(payload, remotePath)
+        // Backup first: a failed .bak aborts the save so the original is never lost.
+        val backupCaptured = try {
+            val current = sftp.get(remotePath).use { it.readBytes() }
+            sftp.put(ByteArrayInputStream(current), "$remotePath.bak", ChannelSftp.OVERWRITE)
+            true
+        } catch (missing: com.jcraft.jsch.SftpException) {
+            if (missing.id == ChannelSftp.SSH_FX_NO_SUCH_FILE) {
+                false // new file: nothing to back up yet
+            } else {
+                throw IllegalStateException("Backup write failed for $remotePath; save aborted so the original is preserved", missing)
             }
-            sftp.put(ByteArrayInputStream(newContent.encodeToByteArray()), remotePath, ChannelSftp.OVERWRITE)
         }
+        sftp.put(ByteArrayInputStream(payload), remotePath, ChannelSftp.OVERWRITE)
+        backupCaptured
     }
 
     override suspend fun deployPublicKey(

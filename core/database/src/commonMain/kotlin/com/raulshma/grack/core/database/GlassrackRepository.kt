@@ -134,6 +134,8 @@ class GlassrackRepository(
         if (existing?.credentialVaultId != null) {
             vault.deleteSecret(existing.credentialVaultId)
         }
+        // Cascade: the node's port-forward tunnels must not outlive it.
+        db.tunnelDao().deleteForServer(serverId)
         db.serverDao().deleteById(serverId)
     }
 
@@ -372,6 +374,16 @@ class GlassrackRepository(
             alertRules = db.alertRuleDao().getAllOnce().map { it.toDomain() },
             preferences = preferencesStore.current(),
             sshKeyMetadata = db.sshKeyDao().getAllOnce().map { it.toDomain() },
+            tunnels = db.tunnelDao().getAllOnce().map { tunnel ->
+                PortForwardTunnel(
+                    id = tunnel.id,
+                    serverId = tunnel.serverId,
+                    label = tunnel.label,
+                    localPort = tunnel.localPort,
+                    remoteHost = tunnel.remoteHost,
+                    remotePort = tunnel.remotePort,
+                )
+            },
         )
         val bundle = vault.encryptBackup(json.encodeToString(payload), passphrase)
         return json.encodeToString(bundle)
@@ -388,6 +400,23 @@ class GlassrackRepository(
         db.dashboardDao().upsertTiles(payload.tiles.map { it.toEntity() })
         db.snippetDao().upsertAll(payload.snippets.map { it.toEntity() })
         db.alertRuleDao().upsertAll(payload.alertRules.map { it.toEntity() })
+        // v1 payloads have no tunnels; empty is the default, so both versions restore.
+        db.tunnelDao().upsertAll(
+            payload.tunnels.map { tunnel ->
+                TunnelEntity(
+                    id = tunnel.id,
+                    serverId = tunnel.serverId,
+                    label = tunnel.label,
+                    localPort = tunnel.localPort,
+                    remoteHost = tunnel.remoteHost,
+                    remotePort = tunnel.remotePort,
+                )
+            },
+        )
+        // Key metadata was exported but previously dropped on import; restore it so key
+        // references on restored servers stay resolvable. (Private key material itself
+        // never leaves the vault; it must be re-imported on a fresh device.)
+        db.sshKeyDao().upsertAll(payload.sshKeyMetadata.map { it.toEntity() })
         preferencesStore.update { payload.preferences }
     }
 

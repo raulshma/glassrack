@@ -2,9 +2,11 @@ package com.raulshma.grack.feature.servers
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import co.touchlab.kermit.Logger
 import com.raulshma.grack.core.database.GlassrackRepository
 import com.raulshma.grack.core.model.AuditCategory
 import com.raulshma.grack.core.model.AuthType
+import com.raulshma.grack.core.model.ConfirmationLevel
 import com.raulshma.grack.core.model.HostKeyChallenge
 import com.raulshma.grack.core.model.NetworkInterfaceInfo
 import com.raulshma.grack.core.model.NetworkPortInfo
@@ -17,6 +19,7 @@ import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.security.BiometricGate
 import com.raulshma.grack.core.security.SecureVault
 import com.raulshma.grack.core.ssh.HomelabController
+import com.raulshma.grack.core.ssh.TextFileGuard
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +39,7 @@ data class ServersUiState(
     val searchQuery: String = "",
     val selectedTag: String = "All",
     val hostKeyChallenge: HostKeyChallenge? = null,
+    val dismissedHostKeyChallenge: HostKeyChallenge? = null,
     val testStatusMessage: String? = null,
     val isTestingConnection: Boolean = false,
 )
@@ -64,6 +68,9 @@ class ServersViewModel(
     private val _testMsg = MutableStateFlow<String?>(null)
     private val _testing = MutableStateFlow(false)
 
+    /** Servers whose host-key challenge the user explicitly blocked ("Block" button). */
+    private val _dismissedHostKeyServerIds = MutableStateFlow<Set<String>>(emptySet())
+
     private val _netFiles = MutableStateFlow(NetworkAndFilesState())
     val netFilesState: StateFlow<NetworkAndFilesState> = _netFiles.asStateFlow()
 
@@ -78,6 +85,7 @@ class ServersViewModel(
         _challenge,
         _testMsg,
         _testing,
+        _dismissedHostKeyServerIds,
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         val runtimeMap = arr[0] as Map<String, ServerRuntimeState>
@@ -93,8 +101,14 @@ class ServersViewModel(
         val challenge = arr[7] as HostKeyChallenge?
         val testMsg = arr[8] as String?
         val testing = arr[9] as Boolean
+        val dismissedIds = arr[10] as Set<String>
 
         val all = runtimeMap.values.sortedBy { it.server.sortOrder }
+        val visibleChallenge = (challenge ?: all.firstNotNullOfOrNull { it.pendingHostKeyChallenge })
+            ?.takeIf { it.serverId !in dismissedIds }
+        val dismissedChallenge = all.firstNotNullOfOrNull { rt ->
+            rt.pendingHostKeyChallenge?.takeIf { it.serverId in dismissedIds }
+        }
         ServersUiState(
             servers = all,
             sshKeys = keys,
@@ -103,7 +117,8 @@ class ServersViewModel(
             preferences = prefs,
             searchQuery = search,
             selectedTag = tag,
-            hostKeyChallenge = challenge ?: all.firstNotNullOfOrNull { it.pendingHostKeyChallenge },
+            hostKeyChallenge = visibleChallenge,
+            dismissedHostKeyChallenge = dismissedChallenge,
             testStatusMessage = testMsg,
             isTestingConnection = testing,
         )
@@ -112,21 +127,41 @@ class ServersViewModel(
     fun setSearch(q: String) { _search.value = q }
     fun setSelectedTag(t: String) { _selectedTag.value = t }
 
-    fun saveServer(draft: Server, passwordPlain: String?) {
+    fun saveServer(draft: Server, passwordPlain: String?, clearSavedPassword: Boolean = false) {
         viewModelScope.launch {
             var updated = draft
-            if (draft.authType == AuthType.PASSWORD && !passwordPlain.isNullOrEmpty()) {
-                val vaultId = draft.credentialVaultId ?: "srv_pw_${draft.id}"
+            val vaultId = draft.credentialVaultId ?: "srv_pw_${draft.id}"
+            if (draft.authType == AuthType.PASSWORD && clearSavedPassword) {
+                vault.deleteSecret(vaultId)
+                updated = draft.copy(credentialVaultId = null)
+            } else if (draft.authType == AuthType.PASSWORD && !passwordPlain.isNullOrEmpty()) {
+                // Set (new node) or change (rotate): the Save action is what persists it.
                 vault.putSecret(vaultId, passwordPlain)
                 updated = draft.copy(credentialVaultId = vaultId)
             }
             repository.upsertServer(updated)
+            // The node was edited: a previously blocked host-key challenge is relevant again.
+            _dismissedHostKeyServerIds.update { it - draft.id }
             controller.pollServerOnce(updated)
         }
     }
 
     fun deleteServer(serverId: String) {
         viewModelScope.launch {
+            // Close any live forwards for this node before its tunnels are removed.
+            val server = repository.getServerById(serverId)
+            val state = uiState.value
+            state.tunnels
+                .filter { it.serverId == serverId && it.id in state.activeTunnelIds }
+                .forEach { tun ->
+                    if (server != null) {
+                        runCatching {
+                            controller.toggleTunnel(tun.id, server, tun.localPort, tun.remoteHost, tun.remotePort)
+                        }.onFailure { err ->
+                            Logger.w(err) { "Failed to close tunnel ${tun.label} while deleting server" }
+                        }
+                    }
+                }
             repository.deleteServer(serverId)
         }
     }
@@ -135,11 +170,9 @@ class ServersViewModel(
         viewModelScope.launch {
             _testing.value = true
             _testMsg.value = "Handshaking with ${server.primaryHost}:${server.port}..."
-            if (server.authType == AuthType.PASSWORD && !passwordPlain.isNullOrEmpty()) {
-                val vaultId = server.credentialVaultId ?: "srv_pw_${server.id}"
-                vault.putSecret(vaultId, passwordPlain)
-            }
-            val result = controller.testServerConnection(server, trustFirst)
+            // The typed password is used for this handshake only; it is persisted when the
+            // node is saved, never by testing.
+            val result = controller.testServerConnection(server, trustFirst, transientPassword = passwordPlain)
             _testing.value = false
             result.fold(
                 onSuccess = { challenge ->
@@ -161,12 +194,23 @@ class ServersViewModel(
         viewModelScope.launch {
             controller.acceptHostKeyChallenge(challenge)
             _challenge.value = null
+            _dismissedHostKeyServerIds.update { it - challenge.serverId }
             _testMsg.value = "Trusted fingerprint ${challenge.fingerprintSha256}"
         }
     }
 
-    fun dismissChallenge() {
+    /** "Block" on the challenge dialog: silence it (banner instead) until the node is edited. */
+    fun dismissChallenge(challenge: HostKeyChallenge?) {
         _challenge.value = null
+        if (challenge != null) {
+            _dismissedHostKeyServerIds.update { it + challenge.serverId }
+        }
+    }
+
+    /** Re-opens the challenge dialog for a challenge that was previously blocked. */
+    fun reviewHostKey(challenge: HostKeyChallenge) {
+        _dismissedHostKeyServerIds.update { it - challenge.serverId }
+        _challenge.value = challenge
     }
 
     fun wakeServer(server: Server) {
@@ -192,7 +236,9 @@ class ServersViewModel(
                 _testMsg.value = "Blocked: Safe Read-Only Mode active"
                 return@launch
             }
-            if (biometricGate.canAuthenticate()) {
+            // The biometric prompt is part of the confirmation gate: only when the user
+            // actually chose BIOMETRIC, not on every power action regardless of the setting.
+            if (prefs.destructiveConfirmation == ConfirmationLevel.BIOMETRIC && biometricGate.canAuthenticate()) {
                 val ok = biometricGate.authenticate(
                     title = if (reboot) "Reboot ${server.name}" else "Shutdown ${server.name}",
                     subtitle = "Hardware confirmation required for power control",
@@ -247,6 +293,13 @@ class ServersViewModel(
     fun saveRemoteFile(server: Server) {
         val path = _netFiles.value.openedFilePath ?: return
         val draft = _netFiles.value.openedFileDraft
+        // Fail fast on binary-looking or oversized drafts before any SSH round-trip; the
+        // transport enforces the same guard so the editor can never corrupt a file.
+        runCatching { TextFileGuard.validateText(draft, path) }
+            .onFailure { err ->
+                _netFiles.update { it.copy(statusMessage = err.message) }
+                return
+            }
         viewModelScope.launch {
             runCatching {
                 controller.saveFileWithBackup(server, path, draft)
@@ -258,12 +311,29 @@ class ServersViewModel(
                     )
                 }
             }.onFailure { err ->
-                _netFiles.update { it.copy(statusMessage = err.message) }
+                _netFiles.update { it.copy(statusMessage = "Save failed: ${err.message}") }
             }
         }
     }
 
     fun closeRemoteFile() = _netFiles.update { it.copy(openedFilePath = null) }
+
+    /** Deletes a saved tunnel, closing its live forward first. */
+    fun deleteTunnel(tunnel: PortForwardTunnel, server: Server) {
+        viewModelScope.launch {
+            if (tunnel.id in uiState.value.activeTunnelIds) {
+                val closed = runCatching {
+                    controller.toggleTunnel(tunnel.id, server, tunnel.localPort, tunnel.remoteHost, tunnel.remotePort)
+                }
+                closed.onFailure { err ->
+                    _netFiles.update { it.copy(statusMessage = "Tunnel error: ${err.message}") }
+                    return@launch
+                }
+            }
+            repository.deleteTunnel(tunnel.id)
+            _netFiles.update { it.copy(statusMessage = "Deleted tunnel ${tunnel.label}") }
+        }
+    }
 
     fun createTunnel(serverId: String, label: String, localPort: Int, remoteHost: String, remotePort: Int) {
         viewModelScope.launch {

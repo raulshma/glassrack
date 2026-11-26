@@ -82,6 +82,7 @@ import com.raulshma.grack.core.model.ContainerState
 import com.raulshma.grack.core.model.Formatters
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.StorageUnit
+import com.raulshma.grack.core.ssh.binaryName
 import org.koin.compose.viewmodel.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -295,16 +296,16 @@ fun ContainersPane(
                                                 onAction = { action -> viewModel.requestContainerAction(server, container, action) },
                                                 onLogs = { viewModel.openLogs(server, container) },
                                                 onInspect = { viewModel.openInspect(container) },
-                                                onExecShell = {
-                                                    onOpenExecShell(server.id, "docker exec -it ${container.name} sh\n")
-                                                },
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                                onExecShell = {
+                                    onOpenExecShell(server.id, execShellCommand(container))
+                                },
+                            )
                         }
                     }
+                }
+            }
+        }
+    }
 
                     if (filteredStandalone.isNotEmpty()) {
                         item(key = "standalone-header") {
@@ -364,6 +365,28 @@ fun ContainersPane(
             confirmationLevel = prefs.destructiveConfirmation,
             onConfirm = { viewModel.confirmPendingAction(server) },
             onDismiss = viewModel::dismissPendingAction,
+        )
+    }
+
+    state.pendingConfirmStackVerb?.let { (stack, verb) ->
+        ActionSafetyDialog(
+            title = "Compose $verb on ${stack.projectName}?",
+            description = "Runs '$verb' for the '${stack.projectName}' stack on ${server.name}. " +
+                "'down' stops and removes the stack's containers.",
+            confirmationLevel = prefs.destructiveConfirmation,
+            onConfirm = { viewModel.confirmStackVerb(server) },
+            onDismiss = viewModel::dismissStackVerb,
+        )
+    }
+
+    if (state.pendingConfirmPrune) {
+        ActionSafetyDialog(
+            title = "Prune unused resources?",
+            description = "Removes stopped containers, dangling images and unused networks on ${server.name}. " +
+                "Volumes are kept, but pruned data cannot be recovered.",
+            confirmationLevel = prefs.destructiveConfirmation,
+            onConfirm = { viewModel.confirmPrune(server) },
+            onDismiss = viewModel::dismissPrune,
         )
     }
 
@@ -577,6 +600,10 @@ private data class ContainerPillAction(
     val isDestructive: Boolean = false,
     val onClick: () -> Unit,
 )
+
+/** Exec command follows the container's own runtime instead of a hardcoded docker. */
+private fun execShellCommand(container: ContainerInfo): String =
+    "${container.runtime.binaryName} exec -it ${container.name} sh\n"
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable

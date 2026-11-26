@@ -14,6 +14,7 @@ actual class PlatformSshClient actual constructor(
         server: Server,
         allServers: List<Server>,
         trustFingerprintOnFirstConnect: Boolean,
+        transientPassword: String?,
     ): Result<HostKeyChallenge?> = Result.failure(UnsupportedOperationException("Native iOS SSH transport pending libssh2 integration"))
 
     override suspend fun execute(
@@ -57,7 +58,7 @@ actual class PlatformSshClient actual constructor(
         remotePath: String,
         newContent: String,
         timeoutMs: Long,
-    ) = Unit
+    ): Boolean = false
 
     override suspend fun deployPublicKey(server: Server, allServers: List<Server>, publicKeyOpenSsh: String): SshExecResult =
         execute(server, allServers, "")

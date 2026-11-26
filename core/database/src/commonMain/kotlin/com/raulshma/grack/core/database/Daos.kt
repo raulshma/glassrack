@@ -45,6 +45,9 @@ interface SshKeyDao {
     @Upsert
     suspend fun upsert(entity: SshKeyEntity)
 
+    @Upsert
+    suspend fun upsertAll(entities: List<SshKeyEntity>)
+
     @Query("DELETE FROM ssh_keys WHERE id = :id")
     suspend fun deleteById(id: String)
 }
@@ -168,9 +171,18 @@ interface TunnelDao {
     @Query("SELECT * FROM tunnels ORDER BY label ASC")
     fun observeAll(): Flow<List<TunnelEntity>>
 
+    @Query("SELECT * FROM tunnels ORDER BY label ASC")
+    suspend fun getAllOnce(): List<TunnelEntity>
+
     @Upsert
     suspend fun upsert(entity: TunnelEntity)
 
+    @Upsert
+    suspend fun upsertAll(entities: List<TunnelEntity>)
+
     @Query("DELETE FROM tunnels WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM tunnels WHERE serverId = :serverId")
+    suspend fun deleteForServer(serverId: String)
 }

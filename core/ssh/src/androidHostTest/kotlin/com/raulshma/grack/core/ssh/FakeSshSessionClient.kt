@@ -35,12 +35,23 @@ internal class FakeSshSessionClient : SshSessionClient {
         val stdinText: String?,
     )
 
+    data class WriteRequest(
+        val server: Server,
+        val remotePath: String,
+        val newContent: String,
+        val timeoutMs: Long,
+    )
+
     val executeRequests = mutableListOf<ExecRequest>()
     val streamRequests = mutableListOf<StreamRequest>()
+    val writeRequests = mutableListOf<WriteRequest>()
     val disconnectIdleCalls = mutableListOf<Long>()
 
     var executeHandler: suspend (ExecRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
     var streamHandler: suspend (StreamRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
+    var writeFileHandler: suspend (WriteRequest) -> Boolean = { true }
+    var readFileHandler: suspend (server: Server, remotePath: String) -> String = { _, _ -> "" }
+    var testConnectionHandler: suspend (server: Server, transientPassword: String?) -> Result<HostKeyChallenge?> = { _, _ -> Result.success(null) }
 
     override suspend fun execute(
         server: Server,
@@ -71,7 +82,8 @@ internal class FakeSshSessionClient : SshSessionClient {
         server: Server,
         allServers: List<Server>,
         trustFingerprintOnFirstConnect: Boolean,
-    ): Result<HostKeyChallenge?> = Result.success(null)
+        transientPassword: String?,
+    ): Result<HostKeyChallenge?> = testConnectionHandler(server, transientPassword)
 
     override suspend fun openShell(
         server: Server,
@@ -92,7 +104,7 @@ internal class FakeSshSessionClient : SshSessionClient {
         allServers: List<Server>,
         remotePath: String,
         timeoutMs: Long,
-    ): String = ""
+    ): String = readFileHandler(server, remotePath)
 
     override suspend fun writeFileTextWithBackup(
         server: Server,
@@ -100,7 +112,11 @@ internal class FakeSshSessionClient : SshSessionClient {
         remotePath: String,
         newContent: String,
         timeoutMs: Long,
-    ) = Unit
+    ): Boolean {
+        val request = WriteRequest(server, remotePath, newContent, timeoutMs)
+        writeRequests += request
+        return writeFileHandler(request)
+    }
 
     override suspend fun deployPublicKey(
         server: Server,

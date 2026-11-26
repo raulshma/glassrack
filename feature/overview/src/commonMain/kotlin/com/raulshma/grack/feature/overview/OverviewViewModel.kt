@@ -15,6 +15,7 @@ import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.TileType
 import com.raulshma.grack.core.model.UserPreferences
+import com.raulshma.grack.core.model.requiresConfirmation
 import com.raulshma.grack.core.ssh.HomelabController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -25,6 +26,12 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.random.Random
+
+data class PendingTileContainerAction(
+    val server: Server,
+    val containerName: String,
+    val action: ContainerAction,
+)
 
 data class OverviewUiState(
     val dashboards: List<DashboardProfile> = emptyList(),
@@ -40,6 +47,7 @@ data class OverviewUiState(
     val showActiveJobsSheet: Boolean = false,
     val pinnedContainerStates: Map<String, ContainerInfo> = emptyMap(),
     val statusBanner: String? = null,
+    val pendingTileContainerAction: PendingTileContainerAction? = null,
 )
 
 class OverviewViewModel(
@@ -54,6 +62,7 @@ class OverviewViewModel(
     private val _showActiveJobsSheet = MutableStateFlow(false)
     private val _pinnedContainers = MutableStateFlow<Map<String, ContainerInfo>>(emptyMap())
     private val _statusBanner = MutableStateFlow<String?>(null)
+    private val _pendingTileAction = MutableStateFlow<PendingTileContainerAction?>(null)
 
     val uiState: StateFlow<OverviewUiState> = combine(
         repository.dashboards,
@@ -69,6 +78,7 @@ class OverviewViewModel(
         _showActiveJobsSheet,
         _pinnedContainers,
         _statusBanner,
+        _pendingTileAction,
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         val dashboards = arr[0] as List<DashboardProfile>
@@ -89,6 +99,7 @@ class OverviewViewModel(
         @Suppress("UNCHECKED_CAST")
         val pinned = arr[11] as Map<String, ContainerInfo>
         val banner = arr[12] as String?
+        val pendingTileAction = arr[13] as PendingTileContainerAction?
 
         val effectiveDashId = if (dashboards.any { it.id == requestedDash }) {
             requestedDash
@@ -113,6 +124,7 @@ class OverviewViewModel(
             showActiveJobsSheet = showJobs,
             pinnedContainerStates = pinned,
             statusBanner = banner,
+            pendingTileContainerAction = pendingTileAction,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), OverviewUiState())
 
@@ -246,10 +258,29 @@ class OverviewViewModel(
     }
 
     fun triggerPinnedContainer(server: Server, containerName: String, action: ContainerAction) {
-        if (uiState.value.preferences.safeReadOnlyMode) {
+        val prefs = uiState.value.preferences
+        if (prefs.safeReadOnlyMode) {
             _statusBanner.value = "Blocked: Safe Read-Only Mode is active"
             return
         }
+        if (requiresConfirmation(actionIsDestructive = action.isDestructive, prefs = prefs)) {
+            _pendingTileAction.value = PendingTileContainerAction(server, containerName, action)
+            return
+        }
+        executeTileContainerAction(server, containerName, action)
+    }
+
+    fun confirmTileContainerAction() {
+        val pending = _pendingTileAction.value ?: return
+        _pendingTileAction.value = null
+        executeTileContainerAction(pending.server, pending.containerName, pending.action)
+    }
+
+    fun dismissTileContainerAction() {
+        _pendingTileAction.value = null
+    }
+
+    private fun executeTileContainerAction(server: Server, containerName: String, action: ContainerAction) {
         viewModelScope.launch {
             val container = _pinnedContainers.value["${server.id}:$containerName"]
                 ?: ContainerInfo(id = containerName, shortId = containerName, name = containerName, image = "docker")
