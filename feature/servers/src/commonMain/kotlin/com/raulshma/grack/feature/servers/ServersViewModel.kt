@@ -25,8 +25,6 @@ import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.core.ssh.TextFileGuard
 import io.github.vinceglb.filekit.PlatformFile
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -39,6 +37,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
 import kotlin.random.Random
 
 data class ServersUiState(
@@ -130,7 +129,7 @@ class ServersViewModel(
     /** ContentResolver-backed streams; `null` where file transfers are unsupported (iOS). */
     private val transferStreams: TransferStreams? = null,
     /** Injected so tests can run transfers entirely on the test scheduler. */
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val ioDispatcher: CoroutineContext = transferIoDispatcher,
 ) : ViewModel() {
 
     private val _search = MutableStateFlow("")
