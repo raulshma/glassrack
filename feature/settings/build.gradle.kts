@@ -15,6 +15,9 @@ kotlin {
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions { jvmTarget = JvmTarget.JVM_11 }
+        withHostTest {
+            isIncludeAndroidResources = true
+        }
     }
     sourceSets {
         commonMain.dependencies {
@@ -34,5 +37,20 @@ kotlin {
             implementation(libs.filekit.dialogs.compose)
             implementation(libs.kermit)
         }
+        getByName("androidHostTest").dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.junit)
+            implementation(libs.kotlinx.coroutines.test)
+            implementation(libs.robolectric)
+            implementation(libs.androidx.testExt.junit)
+            implementation(libs.androidx.sqlite.bundled)
+        }
+    }
+}
+
+// Robolectric plus the Tink-backed vault exhaust the default 512m worker heap (mirrors core/ssh).
+tasks.matching { it.name == "testAndroidHostTest" }.configureEach {
+    if (this is org.gradle.process.JavaForkOptions) {
+        maxHeapSize = "2g"
     }
 }

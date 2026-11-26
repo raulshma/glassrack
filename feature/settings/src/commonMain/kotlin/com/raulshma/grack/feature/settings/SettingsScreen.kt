@@ -92,6 +92,7 @@ import com.raulshma.grack.core.designsystem.ExpressiveGroupedCard
 import com.raulshma.grack.core.designsystem.ExpressiveGroupedItem
 import com.raulshma.grack.core.designsystem.ExpressiveIconTile
 import com.raulshma.grack.core.designsystem.ExpressiveSectionHeader
+import com.raulshma.grack.core.designsystem.ActionSafetyDialog
 import com.raulshma.grack.core.designsystem.ExpressiveSeedSwatches
 import com.raulshma.grack.core.designsystem.ExpressiveSegmentedPillGroup
 import com.raulshma.grack.core.designsystem.LocalGlassrackDesign
@@ -703,6 +704,72 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+        }
+
+        // 2b. Known Hosts (Phase 8): saved host-key fingerprints; Forget re-arms the TOFU challenge.
+        item {
+            val knownHosts = state.servers.filter { !it.hostKeyFingerprint.isNullOrBlank() }
+            var pendingForgetHost by remember { mutableStateOf<Server?>(null) }
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ExpressiveSectionHeader(title = "Known Hosts", count = knownHosts.size)
+                ExpressiveGroupedCard(itemSpacing = 2.dp) {
+                    knownHosts.forEachIndexed { index, srv ->
+                        ExpressiveGroupedItem(index = index, count = knownHosts.size) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    ExpressiveIconTile(
+                                        icon = Icons.Rounded.Fingerprint,
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        contentColor = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Column {
+                                        Text(srv.name, style = MaterialTheme.typography.bodyLarge)
+                                        Text(
+                                            text = srv.hostKeyFingerprint.orEmpty(),
+                                            style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                FilledTonalButton(
+                                    onClick = { pendingForgetHost = srv },
+                                    shape = RoundedCornerShape(999.dp),
+                                ) {
+                                    Text("Forget")
+                                }
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = "Forgetting a fingerprint makes the next connect verify the host key again (trust-on-first-use re-arms).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            pendingForgetHost?.let { srv ->
+                ActionSafetyDialog(
+                    title = "Forget host key for ${srv.name}?",
+                    description = "Clears the trusted fingerprint for ${srv.primaryHost}. The next connect re-raises " +
+                        "the host-key verification challenge before any credential is sent.",
+                    confirmationLevel = prefs.destructiveConfirmation,
+                    onConfirm = {
+                        pendingForgetHost = null
+                        viewModel.forgetHostKey(srv)
+                    },
+                    onDismiss = { pendingForgetHost = null },
+                )
             }
         }
 

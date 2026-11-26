@@ -36,7 +36,6 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.raulshma.grack.MainActivity
 import com.raulshma.grack.core.database.GlassrackRepository
-import com.raulshma.grack.core.model.AuditCategory
 import com.raulshma.grack.core.model.ContainerAction
 import com.raulshma.grack.core.model.ContainerState
 import com.raulshma.grack.core.model.Formatters
@@ -108,15 +107,18 @@ class ToggleContainerWidgetCallback : ActionCallback {
         if (prefs.safeReadOnlyMode) return
         val action = ContainerAction.valueOf(actionName)
         if (requiresConfirmation(actionIsDestructive = action.isDestructive, prefs = prefs)) {
-            // A widget tap cannot present the confirmation UI; it must not silently
-            // bypass the gate either, so the destructive tap is recorded as BLOCKED.
-            ctrl.recordBlockedAction(
-                server = server,
-                category = AuditCategory.CONTAINER,
-                actionTitle = "Blocked ${action.label} on $ctrName (widget)",
-                command = "${action.name.lowercase()} $ctrName",
-                reason = "Destructive widget tap requires in-app confirmation",
-                triggerSource = TriggerSource.WIDGET,
+            // Phase 8: a widget tap cannot present the confirmation UI, so a destructive
+            // tap under a non-NONE gate deep-links into the node detail with the action
+            // staged; the in-app dialog completes it (executes, or audits BLOCKED when
+            // dismissed). The tap itself stays audit-silent — no more BLOCKED+silence.
+            context.startActivity(
+                launchAppIntent(
+                    context,
+                    dest = "server",
+                    serverId = serverId,
+                    pendingContainer = ctrName,
+                    pendingAction = actionName,
+                ),
             )
             return
         }
@@ -139,11 +141,19 @@ class SendWolWidgetCallback : ActionCallback {
     }
 }
 
-private fun launchAppIntent(context: Context, dest: String? = null, serverId: String? = null): Intent {
+private fun launchAppIntent(
+    context: Context,
+    dest: String? = null,
+    serverId: String? = null,
+    pendingContainer: String? = null,
+    pendingAction: String? = null,
+): Intent {
     return Intent(context, MainActivity::class.java).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         dest?.let { putExtra(MainActivity.EXTRA_DEST, it) }
         serverId?.let { putExtra(MainActivity.EXTRA_SERVER_ID, it) }
+        pendingContainer?.let { putExtra(MainActivity.EXTRA_PENDING_CONTAINER, it) }
+        pendingAction?.let { putExtra(MainActivity.EXTRA_PENDING_ACTION, it) }
     }
 }
 

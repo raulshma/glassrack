@@ -14,6 +14,17 @@ import kotlinx.coroutines.flow.StateFlow
  */
 const val DEFAULT_TRANSFER_TIMEOUT_MS: Long = 15 * 60_000L
 
+/**
+ * The exact shell command both the Android transport executes and the controller audits
+ * for `deployPublicKey` (Phase 8 audit honesty): one command appends the key idempotently
+ * (grep -qxF guard), fixes the ~/.ssh permissions, and shell-escapes the key material.
+ * The key is public — it belongs in the audit ledger verbatim.
+ */
+fun deployPublicKeyCommand(publicKeyOpenSsh: String): String {
+    val escaped = publicKeyOpenSsh.trim().replace("'", "'\"'\"'")
+    return "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qxF '$escaped' ~/.ssh/authorized_keys 2>/dev/null || echo '$escaped' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+}
+
 data class SshExecResult(
     val exitCode: Int,
     val stdout: String,

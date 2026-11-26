@@ -78,6 +78,8 @@ import com.raulshma.grack.core.database.GlassrackRepository
 import com.raulshma.grack.core.designsystem.ExpressiveBadgeShape
 import com.raulshma.grack.core.designsystem.ExpressiveShapeBadge
 import com.raulshma.grack.core.designsystem.GlassrackTheme
+import com.raulshma.grack.core.designsystem.WindowWidths
+import com.raulshma.grack.core.model.ContainerAction
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.security.BiometricGate
@@ -85,6 +87,7 @@ import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.feature.audit.AuditScreen
 import com.raulshma.grack.feature.overview.OverviewScreen
 import com.raulshma.grack.feature.servers.ServersScreen
+import com.raulshma.grack.feature.servers.WidgetPendingContainerAction
 import com.raulshma.grack.feature.settings.SettingsScreen
 import com.raulshma.grack.feature.terminal.TerminalScreen
 import kotlinx.coroutines.launch
@@ -127,6 +130,8 @@ fun GlassrackApp(
     deepLinkServerId: String? = null,
     deepLinkDestination: String? = null,
     deepLinkQuery: String? = null,
+    deepLinkPendingContainer: String? = null,
+    deepLinkPendingAction: String? = null,
     dynamicSeedColor: Color? = null,
     onConsumeDeepLink: () -> Unit = {},
     onDarkThemeChanged: (Boolean) -> Unit = {},
@@ -143,6 +148,25 @@ fun GlassrackApp(
     var pendingAddNode by remember { mutableStateOf(false) }
     var pendingTermServerId by remember { mutableStateOf<String?>(null) }
     var pendingTermCmd by remember { mutableStateOf<String?>(null) }
+    // Destructive widget tap (Phase 8): staged until the node-detail dialog resolves it.
+    var pendingWidgetServerId by remember { mutableStateOf<String?>(null) }
+    var pendingWidgetContainer by remember { mutableStateOf<String?>(null) }
+    var pendingWidgetAction by remember { mutableStateOf<String?>(null) }
+
+    // The staged extras as the typed marker ServersScreen renders the confirmation dialog
+    // from; an unparseable action name stages nothing (plain node deep link remains).
+    val stagedWidgetAction: WidgetPendingContainerAction? = remember(
+        pendingWidgetServerId,
+        pendingWidgetContainer,
+        pendingWidgetAction,
+    ) {
+        val serverId = pendingWidgetServerId ?: return@remember null
+        val container = pendingWidgetContainer ?: return@remember null
+        val actionName = pendingWidgetAction ?: return@remember null
+        runCatching { ContainerAction.valueOf(actionName) }.getOrNull()?.let {
+            WidgetPendingContainerAction(serverId, container, it)
+        }
+    }
 
     val backStack = remember { mutableStateListOf<GlassrackRoute>(GlassrackRoute.Overview) }
 
@@ -160,7 +184,7 @@ fun GlassrackApp(
         }
     }
 
-    LaunchedEffect(deepLinkDestination, deepLinkServerId, deepLinkQuery) {
+    LaunchedEffect(deepLinkDestination, deepLinkServerId, deepLinkQuery, deepLinkPendingContainer, deepLinkPendingAction) {
         when (deepLinkDestination) {
             "terminal" -> {
                 pendingTermServerId = deepLinkServerId ?: servers.firstOrNull()?.id
@@ -171,6 +195,13 @@ fun GlassrackApp(
             "server" -> {
                 backStack.clear()
                 backStack.add(GlassrackRoute.Servers(deepLinkServerId))
+                // Phase 8: a destructive widget tap arrives with the container action to
+                // stage; the node detail surfaces the confirmation dialog for it.
+                if (deepLinkServerId != null && deepLinkPendingContainer != null && deepLinkPendingAction != null) {
+                    pendingWidgetServerId = deepLinkServerId
+                    pendingWidgetContainer = deepLinkPendingContainer
+                    pendingWidgetAction = deepLinkPendingAction
+                }
                 onConsumeDeepLink()
             }
             "audit" -> {
@@ -243,7 +274,7 @@ fun GlassrackApp(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background),
                 ) {
-                    val isExpanded = maxWidth >= 840.dp
+                    val isExpanded = maxWidth >= WindowWidths.navigationRail
 
                     if (isExpanded) {
                         Row(modifier = Modifier.fillMaxSize()) {
@@ -310,6 +341,12 @@ fun GlassrackApp(
                                     pendingTermCmd = pendingTermCmd,
                                     pendingAddNode = pendingAddNode,
                                     onConsumedOpenAddSheet = { pendingAddNode = false },
+                                    pendingWidgetAction = stagedWidgetAction,
+                                    onConsumePendingWidgetAction = {
+                                        pendingWidgetServerId = null
+                                        pendingWidgetContainer = null
+                                        pendingWidgetAction = null
+                                    },
                                 )
 
                                 SpeedDialScrim(
@@ -367,6 +404,12 @@ fun GlassrackApp(
                                 pendingTermCmd = pendingTermCmd,
                                 pendingAddNode = pendingAddNode,
                                 onConsumedOpenAddSheet = { pendingAddNode = false },
+                                pendingWidgetAction = stagedWidgetAction,
+                                onConsumePendingWidgetAction = {
+                                    pendingWidgetServerId = null
+                                    pendingWidgetContainer = null
+                                    pendingWidgetAction = null
+                                },
                             )
 
                             SpeedDialScrim(
@@ -451,6 +494,8 @@ private fun GlassrackNavDisplay(
     pendingTermCmd: String?,
     pendingAddNode: Boolean,
     onConsumedOpenAddSheet: () -> Unit,
+    pendingWidgetAction: WidgetPendingContainerAction?,
+    onConsumePendingWidgetAction: () -> Unit,
 ) {
     val motionScheme = MaterialTheme.motionScheme
     val spatialSpec = motionScheme.defaultSpatialSpec<IntOffset>()
@@ -504,6 +549,8 @@ private fun GlassrackNavDisplay(
                     },
                     initialOpenAddSheet = pendingAddNode,
                     onConsumedOpenAddSheet = onConsumedOpenAddSheet,
+                    pendingWidgetContainerAction = pendingWidgetAction,
+                    onConsumePendingWidgetAction = onConsumePendingWidgetAction,
                 )
             }
             entry<GlassrackRoute.Terminal> {

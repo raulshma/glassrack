@@ -30,6 +30,9 @@ class MainActivity : FragmentActivity() {
     private var deepLinkDest by mutableStateOf<String?>(null)
     private var deepLinkServerId by mutableStateOf<String?>(null)
     private var deepLinkQuery by mutableStateOf<String?>(null)
+    /** Destructive widget tap staged for in-app confirmation (Phase 8): container + action. */
+    private var deepLinkPendingContainer by mutableStateOf<String?>(null)
+    private var deepLinkPendingAction by mutableStateOf<String?>(null)
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -74,11 +77,15 @@ class MainActivity : FragmentActivity() {
                 deepLinkServerId = deepLinkServerId,
                 deepLinkDestination = deepLinkDest,
                 deepLinkQuery = deepLinkQuery,
+                deepLinkPendingContainer = deepLinkPendingContainer,
+                deepLinkPendingAction = deepLinkPendingAction,
                 dynamicSeedColor = dynamicPrimary,
                 onConsumeDeepLink = {
                     deepLinkDest = null
                     deepLinkServerId = null
                     deepLinkQuery = null
+                    deepLinkPendingContainer = null
+                    deepLinkPendingAction = null
                 },
                 onDarkThemeChanged = { isAppDark = it },
             )
@@ -118,6 +125,8 @@ class MainActivity : FragmentActivity() {
         deepLinkDest = intent?.getStringExtra(EXTRA_DEST)
         deepLinkServerId = intent?.getStringExtra(EXTRA_SERVER_ID)
         deepLinkQuery = intent?.getStringExtra(EXTRA_QUERY)
+        deepLinkPendingContainer = intent?.getStringExtra(EXTRA_PENDING_CONTAINER)
+        deepLinkPendingAction = intent?.getStringExtra(EXTRA_PENDING_ACTION)
     }
 
     companion object {
@@ -125,6 +134,13 @@ class MainActivity : FragmentActivity() {
         const val EXTRA_SERVER_ID = "glassrack_server_id"
         /** Free-text filter (audit search) accompanying an [EXTRA_DEST] deep link. */
         const val EXTRA_QUERY = "glassrack_query"
+
+        /**
+         * Destructive widget tap (Phase 8): the tapped container and the [ContainerAction]
+         * name, staged for the in-app confirmation dialog on the node detail.
+         */
+        const val EXTRA_PENDING_CONTAINER = "glassrack_pending_container"
+        const val EXTRA_PENDING_ACTION = "glassrack_pending_action"
         private const val PREFERENCES = "glassrack_main"
         private const val KEY_NOTIFICATION_PERMISSION_REQUESTED = "notification_permission_requested"
     }

@@ -332,6 +332,46 @@ class HomelabController(
     }
 
     /**
+     * Known-hosts manager (Phase 8): forgets the node's trusted host-key fingerprint, so
+     * the next connect re-runs the TOFU verification and re-raises the challenge dialog.
+     * Security-relevant credential reset, audited as CONFIG with the real outcome.
+     */
+    suspend fun forgetHostKey(server: Server): Result<Unit> {
+        val started = currentTimeEpochMs()
+        return runCatching {
+            repository.clearHostKeyFingerprint(server.id)
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Forgot Host Key: ${server.name}",
+                rawCommand = "grack forget-host-key ${server.primaryHost}",
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.SUCCESS,
+                exitCode = 0,
+                durationMs = currentTimeEpochMs() - started,
+                outputSnippet = "Trusted fingerprint cleared; the next connect re-raises the verification challenge.",
+            )
+            Unit
+        }.onFailure { t ->
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Forgot Host Key: ${server.name}",
+                rawCommand = "grack forget-host-key ${server.primaryHost}",
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.FAILED,
+                exitCode = -1,
+                durationMs = currentTimeEpochMs() - started,
+                outputSnippet = t.message.orEmpty(),
+            )
+        }
+    }
+
+    /**
      * Runs [command] with honest job/audit bookkeeping (SUCCESS / FAILED / TIMEOUT / CANCELLED).
      *
      * [timeoutMs] is nullable: `null` means untimed and only makes sense with
@@ -1389,8 +1429,49 @@ class HomelabController(
         }
     }
 
+    /**
+     * Appends a public key to the node's `~/.ssh/authorized_keys`, audited as CONFIG with
+     * the honest command (built by [deployPublicKeyCommand], the exact text the transport
+     * runs), the real outcome and the real duration — the save-audit honesty standard.
+     */
     suspend fun deployPublicKey(server: Server, publicKey: String): SshExecResult {
-        return sshClient.deployPublicKey(server, latestServers, publicKey)
+        val command = deployPublicKeyCommand(publicKey)
+        val started = currentTimeEpochMs()
+        return try {
+            val result = sshClient.deployPublicKey(server, latestServers, publicKey)
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Deploy Public Key",
+                rawCommand = command,
+                triggerSource = TriggerSource.UI,
+                outcome = if (result.exitCode == 0) AuditOutcome.SUCCESS else AuditOutcome.FAILED,
+                exitCode = result.exitCode,
+                durationMs = result.durationMs,
+                outputSnippet = result.stdout.ifBlank { result.stderr },
+            )
+            result
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            val elapsed = currentTimeEpochMs() - started
+            repository.recordAudit(
+                timestampEpochMs = currentTimeEpochMs(),
+                serverId = server.id,
+                serverNameSnapshot = server.name,
+                category = AuditCategory.CONFIG,
+                actionTitle = "Deploy Public Key",
+                rawCommand = command,
+                triggerSource = TriggerSource.UI,
+                outcome = AuditOutcome.FAILED,
+                exitCode = -1,
+                durationMs = elapsed,
+                outputSnippet = t.message.orEmpty(),
+            )
+            SshExecResult(-1, "", t.message ?: "Key deploy failed", elapsed)
+        }
     }
 
     suspend fun sendWakeOnLan(server: Server, triggerSource: TriggerSource = TriggerSource.UI): Result<Unit> {
@@ -1422,29 +1503,82 @@ class HomelabController(
         }
     }
 
+    /**
+     * Opens or closes a local port-forward, audited both ways (Phase 8: tunnel close was
+     * never recorded). Both audits carry the real outcome and the real duration; a failed
+     * open or close records FAILED instead of silently skipping the ledger.
+     */
     suspend fun toggleTunnel(tunnelId: String, server: Server, localPort: Int, remoteHost: String, remotePort: Int): Result<Boolean> {
         val isOpen = _activeTunnels.value.contains(tunnelId)
+        val started = currentTimeEpochMs()
+        val forwardPreview = "ssh -L $localPort:$remoteHost:$remotePort ${server.username}@${server.primaryHost}"
         return runCatching {
             if (isOpen) {
-                sshClient.closePortForward(tunnelId)
-                _activeTunnels.update { it - tunnelId }
-                false
+                try {
+                    sshClient.closePortForward(tunnelId)
+                    _activeTunnels.update { it - tunnelId }
+                    repository.recordAudit(
+                        timestampEpochMs = currentTimeEpochMs(),
+                        serverId = server.id,
+                        serverNameSnapshot = server.name,
+                        category = AuditCategory.SSH,
+                        actionTitle = "Closed SSH Tunnel :$localPort -> $remoteHost:$remotePort",
+                        rawCommand = "$forwardPreview (close)",
+                        triggerSource = TriggerSource.UI,
+                        outcome = AuditOutcome.SUCCESS,
+                        exitCode = 0,
+                        durationMs = currentTimeEpochMs() - started,
+                    )
+                    false
+                } catch (t: Throwable) {
+                    repository.recordAudit(
+                        timestampEpochMs = currentTimeEpochMs(),
+                        serverId = server.id,
+                        serverNameSnapshot = server.name,
+                        category = AuditCategory.SSH,
+                        actionTitle = "Closed SSH Tunnel :$localPort -> $remoteHost:$remotePort",
+                        rawCommand = "$forwardPreview (close)",
+                        triggerSource = TriggerSource.UI,
+                        outcome = AuditOutcome.FAILED,
+                        exitCode = -1,
+                        durationMs = currentTimeEpochMs() - started,
+                        outputSnippet = t.message.orEmpty(),
+                    )
+                    throw t
+                }
             } else {
-                sshClient.openLocalPortForward(tunnelId, server, latestServers, localPort, remoteHost, remotePort)
-                _activeTunnels.update { it + tunnelId }
-                repository.recordAudit(
-                    timestampEpochMs = currentTimeEpochMs(),
-                    serverId = server.id,
-                    serverNameSnapshot = server.name,
-                    category = AuditCategory.SSH,
-                    actionTitle = "Opened SSH Tunnel :$localPort -> $remoteHost:$remotePort",
-                    rawCommand = "ssh -L $localPort:$remoteHost:$remotePort ${server.username}@${server.primaryHost}",
-                    triggerSource = TriggerSource.UI,
-                    outcome = AuditOutcome.SUCCESS,
-                    exitCode = 0,
-                    durationMs = 45L,
-                )
-                true
+                try {
+                    sshClient.openLocalPortForward(tunnelId, server, latestServers, localPort, remoteHost, remotePort)
+                    _activeTunnels.update { it + tunnelId }
+                    repository.recordAudit(
+                        timestampEpochMs = currentTimeEpochMs(),
+                        serverId = server.id,
+                        serverNameSnapshot = server.name,
+                        category = AuditCategory.SSH,
+                        actionTitle = "Opened SSH Tunnel :$localPort -> $remoteHost:$remotePort",
+                        rawCommand = forwardPreview,
+                        triggerSource = TriggerSource.UI,
+                        outcome = AuditOutcome.SUCCESS,
+                        exitCode = 0,
+                        durationMs = currentTimeEpochMs() - started,
+                    )
+                    true
+                } catch (t: Throwable) {
+                    repository.recordAudit(
+                        timestampEpochMs = currentTimeEpochMs(),
+                        serverId = server.id,
+                        serverNameSnapshot = server.name,
+                        category = AuditCategory.SSH,
+                        actionTitle = "Opened SSH Tunnel :$localPort -> $remoteHost:$remotePort",
+                        rawCommand = forwardPreview,
+                        triggerSource = TriggerSource.UI,
+                        outcome = AuditOutcome.FAILED,
+                        exitCode = -1,
+                        durationMs = currentTimeEpochMs() - started,
+                        outputSnippet = t.message.orEmpty(),
+                    )
+                    throw t
+                }
             }
         }
     }

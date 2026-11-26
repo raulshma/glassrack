@@ -115,6 +115,7 @@ import com.raulshma.grack.core.designsystem.StatusBeacon
 import com.raulshma.grack.core.designsystem.VicoSparkline
 import com.raulshma.grack.core.designsystem.VicoTelemetryChart
 import com.raulshma.grack.core.designsystem.WavyMetricBar
+import com.raulshma.grack.core.designsystem.WindowWidths
 import com.raulshma.grack.core.designsystem.expressiveHorizontalGroupShape
 import com.raulshma.grack.core.designsystem.monoNumericStyle
 import com.raulshma.grack.core.model.AuthType
@@ -149,6 +150,9 @@ fun ServersScreen(
     modifier: Modifier = Modifier,
     initialOpenAddSheet: Boolean = false,
     onConsumedOpenAddSheet: () -> Unit = {},
+    /** Destructive widget tap staged for in-app confirmation (Phase 8); null when none. */
+    pendingWidgetContainerAction: WidgetPendingContainerAction? = null,
+    onConsumePendingWidgetAction: () -> Unit = {},
     viewModel: ServersViewModel = koinViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -169,8 +173,13 @@ fun ServersScreen(
         }
     }
 
+    // A staged widget action whose node no longer exists can never surface; drop it quietly.
+    LaunchedEffect(state.servers) {
+        viewModel.clearStalePendingWidgetAction(state.servers.map { it.server.id }.toSet())
+    }
+
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val isWide = maxWidth >= 780.dp
+        val isWide = maxWidth >= WindowWidths.twoPaneSplit
         if (isWide) {
             Row(
                 modifier = Modifier.fillMaxSize(),
@@ -215,6 +224,8 @@ fun ServersScreen(
                             onSelectServer(null)
                         },
                         onOpenTerminal = onOpenTerminal,
+                        pendingWidgetAction = pendingWidgetContainerAction,
+                        onConsumePendingWidgetAction = onConsumePendingWidgetAction,
                         viewModel = viewModel,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
@@ -276,6 +287,8 @@ fun ServersScreen(
                         onSelectServer(null)
                     },
                     onOpenTerminal = onOpenTerminal,
+                    pendingWidgetAction = pendingWidgetContainerAction,
+                    onConsumePendingWidgetAction = onConsumePendingWidgetAction,
                     viewModel = viewModel,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -624,6 +637,8 @@ private fun ServerDetailPane(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onOpenTerminal: (String, String?) -> Unit,
+    pendingWidgetAction: WidgetPendingContainerAction?,
+    onConsumePendingWidgetAction: () -> Unit,
     viewModel: ServersViewModel,
     modifier: Modifier = Modifier,
 ) {
@@ -981,6 +996,27 @@ private fun ServerDetailPane(
                 viewModel.rebootOrShutdown(server, isReboot)
             },
             onDismiss = { confirmPowerAction = null },
+        )
+    }
+
+    // Phase 8: a destructive widget tap deep-linked here with the action staged; the
+    // in-app dialog completes the UX the widget cannot provide. Execution (or the BLOCKED
+    // audit on dismiss) happens from this side; dismissing also clears the deep-link marker.
+    if (pendingWidgetAction != null && pendingWidgetAction.serverId == server.id) {
+        ActionSafetyDialog(
+            title = "${pendingWidgetAction.action.label} ${pendingWidgetAction.containerName}?",
+            description = "Requested from a home-screen widget. This will " +
+                "${pendingWidgetAction.action.label.lowercase()} container " +
+                "'${pendingWidgetAction.containerName}' on ${server.name}.",
+            confirmationLevel = allState.preferences.destructiveConfirmation,
+            onConfirm = {
+                viewModel.confirmPendingWidgetAction(server)
+                onConsumePendingWidgetAction()
+            },
+            onDismiss = {
+                viewModel.dismissPendingWidgetAction(server)
+                onConsumePendingWidgetAction()
+            },
         )
     }
 
@@ -1662,7 +1698,9 @@ private fun NetworkAndFilesTab(
 ) {
     val netFiles by viewModel.netFilesState.collectAsState()
     val design = LocalGlassrackDesign.current
-    var showNewTunnel by remember { mutableStateOf(false) }
+    // Add-Tunnel dialog state: null = closed; a draft (possibly prefilled by "Forward this",
+    // Phase 8) opens the dialog with its values.
+    var tunnelDraft by remember { mutableStateOf<TunnelDraft?>(null) }
     var pendingDeleteTunnel by remember { mutableStateOf<PortForwardTunnel?>(null) }
 
     // Phase 6 binary transfers: the entry queued for the FileKit saver, plus the launchers.
@@ -1749,7 +1787,7 @@ private fun NetworkAndFilesTab(
                     title = "Port-Forward Tunnels",
                     count = tunnels.size,
                     actionLabel = "+ Tunnel",
-                    onAction = { showNewTunnel = true },
+                    onAction = { tunnelDraft = TunnelDraft() },
                 )
                 if (tunnels.isEmpty()) {
                     ExpressiveCard(tonalContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
@@ -1760,7 +1798,7 @@ private fun NetworkAndFilesTab(
                         )
                         Spacer(Modifier.height(10.dp))
                         FilledTonalButton(
-                            onClick = { showNewTunnel = true },
+                            onClick = { tunnelDraft = TunnelDraft() },
                             shape = RoundedCornerShape(999.dp),
                         ) {
                             Icon(Icons.Rounded.Add, null, modifier = Modifier.size(16.dp))
@@ -1952,7 +1990,20 @@ private fun NetworkAndFilesTab(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
                                     )
+                                    // "Forward this" (Phase 8): opens the tunnel dialog
+                                    // prefilled from this port's host/port/process.
+                                    IconButton(
+                                        onClick = { tunnelDraft = tunnelDraftForPort(p) },
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.Router,
+                                            contentDescription = "Forward this port",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2139,17 +2190,20 @@ private fun NetworkAndFilesTab(
         }
     }
 
-    if (showNewTunnel) {
-        var label by remember { mutableStateOf("") }
-        var localP by remember { mutableStateOf("") }
-        var remoteP by remember { mutableStateOf("") }
+    tunnelDraft?.let { draft ->
+        // Prefills (label, ports, host) re-seed whenever a new draft is staged, so
+        // "Forward this" on a different port row always starts from that row's values.
+        var label by remember(draft) { mutableStateOf(draft.label) }
+        var localP by remember(draft) { mutableStateOf(draft.localPort) }
+        var remoteH by remember(draft) { mutableStateOf(draft.remoteHost.ifBlank { "127.0.0.1" }) }
+        var remoteP by remember(draft) { mutableStateOf(draft.remotePort) }
         val localPortInt = localP.trim().toIntOrNull()
         val remotePortInt = remoteP.trim().toIntOrNull()
         val canSubmit = localPortInt != null && localPortInt in 1..65535 &&
             remotePortInt != null && remotePortInt in 1..65535
 
         AlertDialog(
-            onDismissRequest = { showNewTunnel = false },
+            onDismissRequest = { tunnelDraft = null },
             shape = RoundedCornerShape(28.dp),
             title = {
                 Text("Add SSH Tunnel", style = MaterialTheme.typography.headlineSmall)
@@ -2174,6 +2228,14 @@ private fun NetworkAndFilesTab(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
+                        value = remoteH,
+                        onValueChange = { remoteH = it },
+                        label = { Text("Remote Host") },
+                        placeholder = { Text("127.0.0.1") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
                         value = remoteP,
                         onValueChange = { remoteP = it },
                         label = { Text("Remote Port") },
@@ -2193,17 +2255,17 @@ private fun NetworkAndFilesTab(
                             serverId = server.id,
                             label = label.trim(),
                             localPort = localPortInt!!,
-                            remoteHost = "127.0.0.1",
+                            remoteHost = remoteH.trim().ifBlank { "127.0.0.1" },
                             remotePort = remotePortInt!!,
                         )
-                        showNewTunnel = false
+                        tunnelDraft = null
                     },
                 ) {
                     Text("Add Tunnel")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showNewTunnel = false }) {
+                TextButton(onClick = { tunnelDraft = null }) {
                     Text("Cancel")
                 }
             },

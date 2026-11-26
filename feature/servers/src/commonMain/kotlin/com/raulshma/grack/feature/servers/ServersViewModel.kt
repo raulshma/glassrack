@@ -6,6 +6,7 @@ import co.touchlab.kermit.Logger
 import com.raulshma.grack.core.database.GlassrackRepository
 import com.raulshma.grack.core.model.AuditCategory
 import com.raulshma.grack.core.model.AuthType
+import com.raulshma.grack.core.model.ContainerAction
 import com.raulshma.grack.core.model.ConfirmationLevel
 import com.raulshma.grack.core.model.HostKeyChallenge
 import com.raulshma.grack.core.model.NetworkInterfaceInfo
@@ -16,10 +17,12 @@ import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerRuntimeState
 import com.raulshma.grack.core.model.SshKeyRecord
 import com.raulshma.grack.core.model.SudoAuth
+import com.raulshma.grack.core.model.TriggerSource
 import com.raulshma.grack.core.model.UserPreferences
 import com.raulshma.grack.core.model.sudoSecretVaultId
 import com.raulshma.grack.core.security.BiometricGate
 import com.raulshma.grack.core.security.SecureVault
+import com.raulshma.grack.core.ssh.ContainerStateCache
 import com.raulshma.grack.core.ssh.FileTransferProgress
 import com.raulshma.grack.core.ssh.HomelabController
 import com.raulshma.grack.core.ssh.TextFileGuard
@@ -54,6 +57,8 @@ data class ServersUiState(
     val isTestingConnection: Boolean = false,
     /** Node ids that have a dedicated sudo password stored at `srv_sudo_<serverId>`. */
     val sudoSecretServerIds: Set<String> = emptySet(),
+    /** A destructive widget tap awaiting in-app confirmation on the node detail (Phase 8). */
+    val pendingWidgetContainerAction: WidgetPendingContainerAction? = null,
 )
 
 /**
@@ -66,6 +71,18 @@ data class ServerSecretEdits(
     val clearLoginPassword: Boolean = false,
     val sudoPassword: String? = null,
     val clearSudoPassword: Boolean = false,
+)
+
+/**
+ * A destructive container tap on a home-screen widget, staged for in-app confirmation
+ * (Phase 8): the widget deep-links into the node detail with this marker and the app
+ * surfaces the confirmation dialog there. Execution (or the BLOCKED audit when dismissed)
+ * happens on the in-app side — the widget tap itself stays audit-silent.
+ */
+data class WidgetPendingContainerAction(
+    val serverId: String,
+    val containerName: String,
+    val action: ContainerAction,
 )
 
 data class NetworkAndFilesState(
@@ -121,6 +138,35 @@ fun remotePathForUpload(currentPath: String, fileName: String): String {
     return if (dir.isEmpty()) "/$fileName" else "$dir/$fileName"
 }
 
+/** Prefill for the Add-Tunnel dialog; empty fields leave the dialog's blanks untouched. */
+data class TunnelDraft(
+    val label: String = "",
+    val localPort: String = "",
+    val remoteHost: String = "",
+    val remotePort: String = "",
+)
+
+/**
+ * "Forward this" (Phase 8): seeds a tunnel draft from a listening-port row. A concrete
+ * listen address becomes the tunnel's remote host; wildcard listeners (0.0.0.0, ::, *,
+ * blank) target the loopback interface — the address the service actually serves on the
+ * node itself. Local and remote port default to the listening port (the common case of
+ * exposing a node service on the same port on this device).
+ */
+fun tunnelDraftForPort(port: NetworkPortInfo): TunnelDraft {
+    val address = port.localAddress.trim()
+    val host = when (address.lowercase()) {
+        "", "0.0.0.0", "::", "[::]", "*" -> "127.0.0.1"
+        else -> address
+    }
+    return TunnelDraft(
+        label = port.processName.ifBlank { "Port ${port.port}" },
+        localPort = port.port.toString(),
+        remoteHost = host,
+        remotePort = port.port.toString(),
+    )
+}
+
 class ServersViewModel(
     private val repository: GlassrackRepository,
     private val controller: HomelabController,
@@ -130,6 +176,8 @@ class ServersViewModel(
     private val transferStreams: TransferStreams? = null,
     /** Injected so tests can run transfers entirely on the test scheduler. */
     private val ioDispatcher: CoroutineContext = transferIoDispatcher,
+    /** Last-known container rows; resolves the widget-pending action's target (Phase 8). */
+    private val containerStateCache: ContainerStateCache? = null,
 ) : ViewModel() {
 
     private val _search = MutableStateFlow("")
@@ -143,6 +191,9 @@ class ServersViewModel(
 
     /** Node ids with a stored dedicated sudo password (drives the sheet's clear affordance). */
     private val _sudoSecretServerIds = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Destructive widget tap staged for in-app confirmation (Phase 8); null when none. */
+    private val _pendingWidgetAction = MutableStateFlow<WidgetPendingContainerAction?>(null)
 
     private val _netFiles = MutableStateFlow(NetworkAndFilesState())
     val netFilesState: StateFlow<NetworkAndFilesState> = _netFiles.asStateFlow()
@@ -170,6 +221,7 @@ class ServersViewModel(
         _testing,
         _dismissedHostKeyServerIds,
         _sudoSecretServerIds,
+        _pendingWidgetAction,
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         val runtimeMap = arr[0] as Map<String, ServerRuntimeState>
@@ -187,6 +239,7 @@ class ServersViewModel(
         val testing = arr[9] as Boolean
         val dismissedIds = arr[10] as Set<String>
         val sudoSecretIds = arr[11] as Set<String>
+        val pendingWidgetAction = arr[12] as WidgetPendingContainerAction?
 
         val all = runtimeMap.values.sortedBy { it.server.sortOrder }
         val visibleChallenge = (challenge ?: all.firstNotNullOfOrNull { it.pendingHostKeyChallenge })
@@ -207,6 +260,7 @@ class ServersViewModel(
             testStatusMessage = testMsg,
             isTestingConnection = testing,
             sudoSecretServerIds = sudoSecretIds,
+            pendingWidgetContainerAction = pendingWidgetAction,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ServersUiState())
 
@@ -688,5 +742,72 @@ class ServersViewModel(
     fun clearMessage() {
         _testMsg.value = null
         _netFiles.update { it.copy(statusMessage = null) }
+    }
+
+    /**
+     * Phase 8: a destructive container tap on a home-screen widget deep-links into the
+     * node detail with the action staged in [ServersUiState.pendingWidgetContainerAction];
+     * the dialog there completes the UX deferred from 1B. No audit happens on staging —
+     * the in-app confirm/dismiss audits the outcome.
+     */
+    fun stagePendingWidgetAction(serverId: String, containerName: String, actionName: String) {
+        val action = runCatching { ContainerAction.valueOf(actionName) }.getOrNull() ?: return
+        _pendingWidgetAction.value = WidgetPendingContainerAction(serverId, containerName, action)
+    }
+
+    /** "Confirm" on the staged widget action: executes it and lets the audit record the outcome. */
+    fun confirmPendingWidgetAction(server: Server) {
+        val pending = _pendingWidgetAction.value ?: return
+        if (pending.serverId != server.id) return
+        _pendingWidgetAction.value = null
+        viewModelScope.launch {
+            if (uiState.value.preferences.safeReadOnlyMode) {
+                controller.recordBlockedAction(
+                    server = server,
+                    category = AuditCategory.CONTAINER,
+                    actionTitle = "Blocked ${pending.action.label} on ${pending.containerName} (widget)",
+                    command = "${pending.action.name.lowercase()} ${pending.containerName}",
+                    reason = "Blocked: Safe Read-Only Mode is active",
+                    triggerSource = TriggerSource.WIDGET,
+                )
+                _testMsg.value = "Blocked: Safe Read-Only Mode is active"
+                return@launch
+            }
+            // The widget rendered its rows from the last-known cache, so the target is
+            // resolved from the same source (with the recorded runtime) before executing.
+            val container = containerStateCache?.containersFor(server.id)
+                ?.firstOrNull { it.name == pending.containerName }
+            if (container == null) {
+                _testMsg.value = "${pending.containerName} is no longer in the cached state; reopen the widget"
+                return@launch
+            }
+            val res = controller.performContainerAction(server, container, pending.action, TriggerSource.WIDGET)
+            _testMsg.value = "${container.name}: ${pending.action.label} (exit ${res.exitCode})"
+        }
+    }
+
+    /** "Dismiss" on the staged widget action: nothing executes; the tap is audited BLOCKED. */
+    fun dismissPendingWidgetAction(server: Server) {
+        val pending = _pendingWidgetAction.value ?: return
+        if (pending.serverId != server.id) return
+        _pendingWidgetAction.value = null
+        viewModelScope.launch {
+            controller.recordBlockedAction(
+                server = server,
+                category = AuditCategory.CONTAINER,
+                actionTitle = "Blocked ${pending.action.label} on ${pending.containerName} (widget)",
+                command = "${pending.action.name.lowercase()} ${pending.containerName}",
+                reason = "Dismissed the in-app confirmation",
+                triggerSource = TriggerSource.WIDGET,
+            )
+        }
+    }
+
+    /** Drops a staged widget action whose node no longer exists (never surfaces, never audits). */
+    fun clearStalePendingWidgetAction(stagedServerIds: Set<String>) {
+        val pending = _pendingWidgetAction.value ?: return
+        if (pending.serverId !in stagedServerIds) {
+            _pendingWidgetAction.value = null
+        }
     }
 }

@@ -9,6 +9,9 @@ fun App(
     deepLinkServerId: String? = null,
     deepLinkDestination: String? = null,
     deepLinkQuery: String? = null,
+    /** Destructive widget tap (Phase 8): container name + action name staged for in-app confirmation. */
+    deepLinkPendingContainer: String? = null,
+    deepLinkPendingAction: String? = null,
     dynamicSeedColor: Color? = null,
     onConsumeDeepLink: () -> Unit = {},
     onDarkThemeChanged: (Boolean) -> Unit = {},
@@ -18,6 +21,8 @@ fun App(
         deepLinkServerId = deepLinkServerId,
         deepLinkDestination = deepLinkDestination,
         deepLinkQuery = deepLinkQuery,
+        deepLinkPendingContainer = deepLinkPendingContainer,
+        deepLinkPendingAction = deepLinkPendingAction,
         dynamicSeedColor = dynamicSeedColor,
         onConsumeDeepLink = onConsumeDeepLink,
         onDarkThemeChanged = onDarkThemeChanged,

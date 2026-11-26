@@ -126,6 +126,19 @@ class SettingsViewModel(
         viewModelScope.launch { repository.deleteSshKey(id) }
     }
 
+    /**
+     * Known-hosts manager (Phase 8): clears the node's trusted host-key fingerprint so the
+     * next connect re-runs the TOFU verification. Audited as CONFIG by the controller.
+     */
+    fun forgetHostKey(server: Server) {
+        viewModelScope.launch {
+            controller.forgetHostKey(server).fold(
+                onSuccess = { _message.value = "Forgot host key for ${server.name}; the next connect verifies it again" },
+                onFailure = { err -> _message.value = "Forget failed: ${err.message}" },
+            )
+        }
+    }
+
     fun saveSnippet(name: String, template: String, tagsCsv: String, requiresConfirm: Boolean) {
         if (name.isBlank() || template.isBlank()) return
         viewModelScope.launch {

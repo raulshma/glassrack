@@ -150,6 +150,17 @@ class GlassrackRepository(
     }
 
     /**
+     * Known-hosts manager (Phase 8): clears the node's trusted fingerprint so the next
+     * connect re-runs the TOFU host-key verification — the challenge dialog re-arms.
+     * Like [updateHostFingerprint] this rewrites only the fingerprint column, never the
+     * rest of the row. Missing nodes are a no-op.
+     */
+    suspend fun clearHostKeyFingerprint(serverId: String) {
+        val existing = db.serverDao().getById(serverId) ?: return
+        db.serverDao().upsert(existing.copy(hostKeyFingerprint = null))
+    }
+
+    /**
      * Persists (or clears) only the node's Phase-3B update report, without rewriting the
      * rest of the row — a scan that lands while capabilities were re-probed must not
      * clobber either column.

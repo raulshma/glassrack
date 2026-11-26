@@ -579,9 +579,9 @@ actual class PlatformSshClient actual constructor(
         allServers: List<Server>,
         publicKeyOpenSsh: String,
     ): SshExecResult {
-        val escaped = publicKeyOpenSsh.trim().replace("'", "'\"'\"'")
-        val cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qxF '$escaped' ~/.ssh/authorized_keys 2>/dev/null || echo '$escaped' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-        return execute(server, allServers, cmd, 10_000L)
+        // Built by the shared builder so the controller's audit records the exact
+        // command this transport executes.
+        return execute(server, allServers, deployPublicKeyCommand(publicKeyOpenSsh), 10_000L)
     }
 
     override suspend fun openLocalPortForward(

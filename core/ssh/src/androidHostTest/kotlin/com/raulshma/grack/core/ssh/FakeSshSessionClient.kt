@@ -74,6 +74,19 @@ internal class FakeSshSessionClient : SshSessionClient {
     val binaryUploadRequests = mutableListOf<BinaryUploadRequest>()
     val disconnectIdleCalls = mutableListOf<Long>()
 
+    /** Tunnel close requests (tunnel ids), scriptable via [closePortForwardHandler]. */
+    val closePortForwardRequests = mutableListOf<String>()
+    var closePortForwardHandler: (String) -> Unit = {}
+
+    /** Scriptable tunnel open (returns the bound local port). */
+    var openLocalPortForwardHandler: suspend (
+        tunnelId: String,
+        server: Server,
+        localPort: Int,
+        remoteHost: String,
+        remotePort: Int,
+    ) -> Int = { _, _, localPort, _, _ -> localPort }
+
     var executeHandler: suspend (ExecRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
     var streamHandler: suspend (StreamRequest) -> SshExecResult = { SshExecResult(0, "ok", "", 1L) }
 
@@ -205,7 +218,11 @@ internal class FakeSshSessionClient : SshSessionClient {
         server: Server,
         allServers: List<Server>,
         publicKeyOpenSsh: String,
-    ): SshExecResult = SshExecResult(0, "", "", 0L)
+    ): SshExecResult = deployPublicKeyHandler(server, publicKeyOpenSsh)
+
+    /** Scriptable key-deploy result; records nothing (the controller audits from its side). */
+    var deployPublicKeyHandler: suspend (server: Server, publicKeyOpenSsh: String) -> SshExecResult =
+        { _, _ -> SshExecResult(0, "", "", 0L) }
 
     override suspend fun openLocalPortForward(
         tunnelId: String,
@@ -214,9 +231,12 @@ internal class FakeSshSessionClient : SshSessionClient {
         localPort: Int,
         remoteHost: String,
         remotePort: Int,
-    ): Int = localPort
+    ): Int = openLocalPortForwardHandler(tunnelId, server, localPort, remoteHost, remotePort)
 
-    override suspend fun closePortForward(tunnelId: String) = Unit
+    override suspend fun closePortForward(tunnelId: String) {
+        closePortForwardRequests += tunnelId
+        closePortForwardHandler(tunnelId)
+    }
 
     override suspend fun disconnect(serverId: String) = Unit
 
