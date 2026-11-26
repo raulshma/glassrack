@@ -15,6 +15,7 @@ import com.raulshma.grack.core.model.TerminalCursorShape
 import com.raulshma.grack.core.ssh.SshShellSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.connectbot.terminal.Terminal
@@ -23,13 +24,17 @@ import org.connectbot.terminal.TerminalEmulatorFactory
 import org.connectbot.terminal.VTermKey
 
 actual class TerminalController actual constructor(
-    private val shellSession: SshShellSession,
+    shellSession: SshShellSession,
     private var appearance: TerminalAppearance,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var ctrlLatched = false
     private var altLatched = false
     internal var onResizeCallback: ((Int, Int) -> Unit)? = null
+
+    /** Swapped by [reattach] on reconnect; the emulator itself is never rebuilt. */
+    private var shellSession: SshShellSession = shellSession
+    private var outputJob: Job? = null
 
     val emulator: TerminalEmulator = TerminalEmulatorFactory.create(
         looper = Looper.getMainLooper(),
@@ -49,12 +54,22 @@ actual class TerminalController actual constructor(
     )
 
     init {
-        scope.launch {
-            shellSession.outputFlow.collect { bytes ->
+        collectOutput(shellSession)
+        applyCursorShape(appearance.cursorShape)
+    }
+
+    private fun collectOutput(session: SshShellSession) {
+        outputJob?.cancel()
+        outputJob = scope.launch {
+            session.outputFlow.collect { bytes ->
                 emulator.writeInput(bytes, 0, bytes.size)
             }
         }
-        applyCursorShape(appearance.cursorShape)
+    }
+
+    actual fun reattach(shellSession: SshShellSession) {
+        this.shellSession = shellSession
+        collectOutput(shellSession)
     }
 
     actual fun sendExtraKey(key: ExtraKeyCode) {

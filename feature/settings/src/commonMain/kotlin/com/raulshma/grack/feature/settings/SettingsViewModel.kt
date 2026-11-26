@@ -266,6 +266,11 @@ class SettingsViewModel(
         it.copy(terminalAppearance = it.terminalAppearance.copy(cursorShape = shape))
     }
 
+    /** Phase 7: attach (or create) a tmux session when an interactive shell opens. */
+    fun setTmuxAutoAttach(enabled: Boolean) = updatePreferences {
+        it.copy(tmuxAutoAttach = enabled)
+    }
+
     companion object {
         const val MIN_POLL_INTERVAL_SEC: Int = 2
         const val MAX_POLL_INTERVAL_SEC: Int = 300

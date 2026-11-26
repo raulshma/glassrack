@@ -893,7 +893,7 @@ fun SettingsScreen(
                         }
                     }
 
-                    ExpressiveGroupedItem(index = 5, count = 6) {
+                    ExpressiveGroupedItem(index = 5, count = 7) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -935,6 +935,38 @@ fun SettingsScreen(
                                 text = "History kept above the prompt (the terminal emulator caps at ${SettingsViewModel.MAX_SCROLLBACK_LINES} lines)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    ExpressiveGroupedItem(index = 6, count = 7) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                ExpressiveIconTile(
+                                    icon = Icons.Rounded.Terminal,
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                                Column {
+                                    Text("Tmux Auto-Attach", style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        text = "Attach to (or create) a tmux session whenever a shell opens; nodes without tmux are skipped",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = prefs.tmuxAutoAttach,
+                                onCheckedChange = { v -> viewModel.setTmuxAutoAttach(v) },
                             )
                         }
                     }

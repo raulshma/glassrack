@@ -87,6 +87,8 @@ data class UserPreferences(
     val storageUnit: StorageUnit = StorageUnit.BINARY_GIB,
     val auditRetentionDays: Int = 90,
     val recordTerminalCommands: Boolean = true,
+    /** Auto-attach (or create) a tmux session when an interactive shell opens. */
+    val tmuxAutoAttach: Boolean = false,
     val terminalAppearance: TerminalAppearance = TerminalAppearance(),
 )
 

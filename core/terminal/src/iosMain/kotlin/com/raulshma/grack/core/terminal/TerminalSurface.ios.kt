@@ -20,6 +20,7 @@ import com.raulshma.grack.core.model.TerminalAppearance
 import com.raulshma.grack.core.ssh.SshShellSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,19 +28,33 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 actual class TerminalController actual constructor(
-    private val shellSession: SshShellSession,
+    shellSession: SshShellSession,
     private var appearance: TerminalAppearance,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val _transcript = MutableStateFlow("")
     val transcript: StateFlow<String> = _transcript.asStateFlow()
 
+    /** Swapped by [reattach] on reconnect; the transcript buffer survives. */
+    private var shellSession: SshShellSession = shellSession
+    private var outputJob: Job? = null
+
     init {
-        scope.launch {
-            shellSession.outputFlow.collect { bytes ->
+        collectOutput(shellSession)
+    }
+
+    private fun collectOutput(session: SshShellSession) {
+        outputJob?.cancel()
+        outputJob = scope.launch {
+            session.outputFlow.collect { bytes ->
                 _transcript.value = (_transcript.value + bytes.decodeToString()).takeLast(16_000)
             }
         }
+    }
+
+    actual fun reattach(shellSession: SshShellSession) {
+        this.shellSession = shellSession
+        collectOutput(shellSession)
     }
 
     actual fun sendExtraKey(key: ExtraKeyCode) {

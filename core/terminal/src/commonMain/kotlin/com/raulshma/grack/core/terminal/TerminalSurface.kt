@@ -31,6 +31,12 @@ expect class TerminalController(shellSession: SshShellSession, appearance: Termi
     fun sendExtraKey(key: ExtraKeyCode)
     fun sendText(text: String)
     fun pasteText(text: String)
+    /**
+     * Swaps the underlying shell without touching the emulator, so scrollback and screen
+     * state survive a reconnect (Phase 7): output is collected from [shellSession] from
+     * now on and keyboard input is written to it.
+     */
+    fun reattach(shellSession: SshShellSession)
     fun clearScreen()
     fun updateAppearance(appearance: TerminalAppearance)
     fun close()

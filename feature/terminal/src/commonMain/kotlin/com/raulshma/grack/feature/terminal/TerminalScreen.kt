@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.CastConnected
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -64,6 +65,7 @@ import com.raulshma.grack.core.designsystem.ExpressiveSectionHeader
 import com.raulshma.grack.core.designsystem.LocalGlassrackDesign
 import com.raulshma.grack.core.designsystem.monoNumericStyle
 import com.raulshma.grack.core.terminal.ExtraKeyCode
+import com.raulshma.grack.core.terminal.TerminalConnectionState
 import com.raulshma.grack.core.terminal.TerminalSurface
 import org.koin.compose.viewmodel.koinViewModel
 
@@ -275,6 +277,57 @@ fun TerminalScreen(
         }
 
         val activeTab = state.tabs.firstOrNull { it.tabId == state.activeTabId }
+        // Phase 7 reconnect banner: automatic retries run first (RECONNECTING); once they
+        // are exhausted (DISCONNECTED) the banner offers a manual retry.
+        val activeConnection = activeTab?.state
+        AnimatedVisibility(
+            visible = activeTab != null && activeConnection != TerminalConnectionState.CONNECTED,
+        ) {
+            val reconnecting = activeConnection == TerminalConnectionState.RECONNECTING
+            ExpressiveCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                tonalContainerColor = if (reconnecting) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.errorContainer
+                },
+                shape = RoundedCornerShape(18.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (reconnecting) {
+                            val attempt = activeTab?.reconnectAttempt ?: 0
+                            "Connection lost — reconnecting (attempt $attempt of 3)…"
+                        } else {
+                            "Connection to ${activeTab?.title.orEmpty()} lost"
+                        },
+                        color = if (reconnecting) {
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onErrorContainer
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (!reconnecting) {
+                        FilledTonalButton(
+                            onClick = viewModel::reconnectActive,
+                            shape = RoundedCornerShape(999.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        ) {
+                            Text("Reconnect")
+                        }
+                    }
+                }
+            }
+        }
         when {
             state.servers.isEmpty() -> {
                 Box(
@@ -404,10 +457,12 @@ fun TerminalScreen(
                             ExtraKeyButton(":") { viewModel.sendExtraKey(ExtraKeyCode.COLON) }
                             ExtraKeyButton("Ctrl+C") { viewModel.sendExtraKey(ExtraKeyCode.CTRL_C) }
                             ExtraKeyButton("Ctrl+D") { viewModel.sendExtraKey(ExtraKeyCode.CTRL_D) }
+                            // Phase 7: paste goes through the emulator's pasteText
+                            // (bracketed paste), not a blind byte write.
                             Surface(
                                 onClick = {
                                     val text = clipboard.getText()?.text
-                                    if (!text.isNullOrEmpty()) viewModel.sendText(text)
+                                    if (!text.isNullOrEmpty()) viewModel.pasteFromClipboard(text)
                                 },
                                 shape = RoundedCornerShape(999.dp),
                                 color = MaterialTheme.colorScheme.secondaryContainer,
@@ -421,6 +476,26 @@ fun TerminalScreen(
                                     Icon(Icons.Rounded.ContentPaste, null, modifier = Modifier.size(14.dp))
                                     Text(
                                         text = "Paste",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                            }
+                            Surface(
+                                onClick = { viewModel.setShowHistory(true) },
+                                enabled = state.commandHistory.isNotEmpty(),
+                                shape = RoundedCornerShape(999.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Icon(Icons.Rounded.History, null, modifier = Modifier.size(14.dp))
+                                    Text(
+                                        text = "History",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.SemiBold,
                                     )
@@ -490,6 +565,71 @@ fun TerminalScreen(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+    }
+
+    if (state.showHistoryDrawer) {
+        ModalBottomSheet(onDismissRequest = { viewModel.setShowHistory(false) }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                ExpressiveSectionHeader(
+                    title = "Command History",
+                    count = state.commandHistory.size,
+                )
+                if (state.commandHistory.isEmpty()) {
+                    ExpressiveEmptyState(
+                        icon = Icons.Rounded.History,
+                        title = "No Commands Recorded",
+                        description = "Commands sent from GRack to this node appear here (governed by the command-recording preference).",
+                        outerShape = ExpressiveBadgeShape.Cookie9Sided,
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(320.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        itemsIndexed(
+                            state.commandHistory.asReversed(),
+                            key = { index, _ -> "history-$index" },
+                        ) { index, command ->
+                            ExpressiveGroupedItem(
+                                index = index,
+                                count = state.commandHistory.size,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                onClick = {
+                                    viewModel.setShowHistory(false)
+                                    viewModel.sendText("$command\n")
+                                },
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    ExpressiveIconTile(
+                                        icon = Icons.Rounded.History,
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    )
+                                    Text(
+                                        text = command,
+                                        style = MaterialTheme.typography.labelLarge.merge(design.monoNumericStyle),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
                                 }
                             }
                         }

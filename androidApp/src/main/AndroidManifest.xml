@@ -6,7 +6,11 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Phase 7: live SSH sessions run as a connectedDevice foreground service (no
+         dataSync 6h/24h cap on Android 15+). CHANGE_NETWORK_STATE satisfies the
+         connectedDevice-type eligibility requirement. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
     <application
         android:name=".GlassrackApplication"
@@ -31,7 +35,7 @@
         <service
             android:name=".service.SshForegroundService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="connectedDevice" />
 
         <service
             android:name=".service.GlassrackQuickTileService"
