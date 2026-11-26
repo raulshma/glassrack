@@ -15,6 +15,14 @@ kotlin {
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions { jvmTarget = JvmTarget.JVM_11 }
+        androidResources {
+            enable = true
+        }
+        withDeviceTestBuilder {
+            sourceSetTreeName = "test"
+        }.configure {
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
     }
     sourceSets {
         commonMain.dependencies {
@@ -28,6 +36,13 @@ kotlin {
             api(libs.materialkolor)
             api(libs.vico.compose)
             api(libs.vico.compose.m3)
+        }
+        getByName("androidDeviceTest").dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.androidx.activity.compose)
+            implementation(libs.androidx.compose.ui.test.junit4)
+            implementation(libs.androidx.testExt.junit)
+            implementation(libs.androidx.testRunner)
         }
     }
 }

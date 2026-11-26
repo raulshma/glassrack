@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
@@ -67,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
@@ -495,8 +497,23 @@ fun ExpressiveSectionHeader(
     }
 }
 
+// A non-CornerBased shape bypasses M3's overshooting corner-radius interpolation.
+private val ExpressivePillShape = GenericShape { size, _ ->
+    val radius = size.minDimension / 2f
+    addRoundRect(
+        RoundRect(
+            left = 0f,
+            top = 0f,
+            right = size.width,
+            bottom = size.height,
+            radiusX = radius,
+            radiusY = radius,
+        )
+    )
+}
+
 /**
- * Connected M3 Expressive pill toggle group using [ToggleButton] with morphing outer/inner corners.
+ * Connected M3 Expressive pill toggle group with rounded outer/inner corners.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -517,7 +534,6 @@ fun <T> ExpressiveSegmentedPillGroup(
         options.forEachIndexed { index, option ->
             val isSelected = option == selected
             val baseShape = expressiveHorizontalGroupShape(index = index, count = options.size)
-            val pillShape = RoundedCornerShape(999.dp)
             ToggleButton(
                 checked = isSelected,
                 onCheckedChange = { checked ->
@@ -529,7 +545,7 @@ fun <T> ExpressiveSegmentedPillGroup(
                 shapes = ToggleButtonShapes(
                     shape = baseShape,
                     pressedShape = RoundedCornerShape(14.dp),
-                    checkedShape = pillShape,
+                    checkedShape = ExpressivePillShape,
                 ),
                 colors = ToggleButtonDefaults.colors(
                     containerColor = design.rackSurfaceContainer,
