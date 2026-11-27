@@ -25,6 +25,7 @@ Use the run button in your IDE's editor gutter, or run tests using Gradle tasks:
 
 - Android tests: `./gradlew :shared:testAndroidHostTest`
 - iOS tests: `./gradlew :shared:iosSimulatorArm64Test`
+- Full CI gate (Android host tests, debug APK, iOS compiles): `./gradlew gate` — or `./scripts/gate.sh` for a watchdog-wrapped run
 
 ---
 

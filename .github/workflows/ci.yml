@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  android-build-and-test:
-    name: Build & Unit Tests
+  gate:
+    name: Verification gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -33,8 +33,8 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests
-        run: ./gradlew testAndroidHostTest --no-daemon
-
-      - name: Build debug APK
-        run: ./gradlew :androidApp:assembleDebug --no-daemon
+      # One task, one definition: the `gate` task in the root build.gradle.kts
+      # (Android host tests, debug APK, iOS compiles). Local runs go through
+      # scripts/gate.sh, which wraps it with a hang watchdog.
+      - name: Run verification gate
+        run: ./gradlew gate --no-daemon

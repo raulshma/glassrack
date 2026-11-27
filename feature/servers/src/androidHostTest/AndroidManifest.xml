@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Host activity for Compose UI tests (createComposeRule) under Robolectric;
+             Compose ships no test-manifest artifact at this version. Same shape as the
+             designsystem androidDeviceTest manifest. -->
+        <activity
+            android:name="androidx.activity.ComponentActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

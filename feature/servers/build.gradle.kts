@@ -47,6 +47,7 @@ kotlin {
             implementation(libs.robolectric)
             implementation(libs.androidx.testExt.junit)
             implementation(libs.androidx.sqlite.bundled)
+            implementation(libs.androidx.compose.ui.test.junit4)
         }
     }
 }

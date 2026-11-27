@@ -85,13 +85,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -620,13 +617,6 @@ private fun ServersInventoryPane(
     }
 }
 
-private data class HeroActionItem(
-    val label: String,
-    val icon: ImageVector,
-    val isDestructive: Boolean = false,
-    val onClick: () -> Unit,
-)
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ServerDetailPane(
@@ -765,27 +755,14 @@ private fun ServerDetailPane(
         // again from leftover scroll at the top (NestedScrollConnection below); a spring
         // settles mid-way stops, and a tab switch or compact-row tap expands it. Heights are
         // measured, so this works unchanged in the phone and the >=780dp split layout.
-        val density = LocalDensity.current
-        val (heroAlpha, compactAlpha) = CollapsingHeaderMath.crossfadeAlphas(headerState.collapseFraction)
-        val compactSplit = splitHeroActionIndices(heroActions.map { it.label })
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(
-                    if (headerState.expandedHeightPx > 0f) {
-                        Modifier.height(with(density) { headerState.headerHeightPx.toDp() })
-                    } else {
-                        Modifier
-                    },
-                )
-                .clip(RoundedCornerShape(28.dp)),
-        ) {
-            Box(
-                modifier = Modifier
-                    .onSizeChanged { headerState.expandedHeightPx = it.height.toFloat() }
-                    .alpha(heroAlpha)
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-            ) {
+        CollapsingDetailHeader(
+            state = headerState,
+            heroActions = heroActions,
+            runtime = runtime,
+            containerColor = heroContainerColor,
+            contentColor = heroContentColor,
+            badgeIcon = heroBadgeIcon,
+            hero = { actions ->
                 ExpressiveHeroCard(
                     headline = server.name,
                     subtitle = subtitleText.ifBlank { "${server.username}@${server.primaryHost}:${server.port}" },
@@ -799,66 +776,10 @@ private fun ServerDetailPane(
                     contentColor = heroContentColor,
                     badgeIcon = heroBadgeIcon,
                     badgeShape = ExpressiveBadgeShape.Cookie9Sided,
-                    actions = {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            heroActions.forEachIndexed { index, action ->
-                                val shape = expressiveHorizontalGroupShape(index = index, count = heroActions.size)
-                                val pillContainer = if (action.isDestructive) {
-                                    MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
-                                } else {
-                                    heroContentColor.copy(alpha = 0.14f)
-                                }
-                                Surface(
-                                    onClick = action.onClick,
-                                    enabled = headerState.isHeroInteractive,
-                                    shape = shape,
-                                    color = pillContainer,
-                                    contentColor = heroContentColor,
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                    ) {
-                                        Icon(
-                                            imageVector = action.icon,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp),
-                                        )
-                                        Text(
-                                            text = action.label,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    },
+                    actions = actions,
                 )
-            }
-            CompactDetailHeaderRow(
-                runtime = runtime,
-                containerColor = heroContainerColor,
-                contentColor = heroContentColor,
-                badgeIcon = heroBadgeIcon,
-                sshAction = heroActions.getOrNull(compactSplit.primaryIndex),
-                overflowActions = compactSplit.overflowIndices.mapNotNull { heroActions.getOrNull(it) },
-                isInteractive = headerState.isCompactInteractive,
-                onExpand = { headerState.expandAnimated() },
-                onMeasuredHeight = { headerState.compactHeightPx = it.toFloat() },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .alpha(compactAlpha),
-            )
-        }
+            },
+        )
 
         // Hero feedback (Phase 1C item 4): Wake/Poll/Reboot results land in the shared
         // status message; surface them here so they are not only visible in the edit sheet.
@@ -1042,7 +963,7 @@ private fun ServerDetailPane(
  * fading in so neither header half steals taps mid-transition.
  */
 @Composable
-private fun CompactDetailHeaderRow(
+internal fun CompactDetailHeaderRow(
     runtime: ServerRuntimeState,
     containerColor: Color,
     contentColor: Color,

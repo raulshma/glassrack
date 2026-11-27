@@ -4,14 +4,44 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import co.touchlab.kermit.Logger
+import com.raulshma.grack.core.designsystem.expressiveHorizontalGroupShape
+import com.raulshma.grack.core.model.ServerRuntimeState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -103,6 +133,142 @@ internal fun splitHeroActionIndices(
 }
 
 internal const val CompactPrimaryActionLabel: String = "SSH"
+
+/** One hero action; its [onClick] serves the hero pill and the compact row alike. */
+internal data class HeroActionItem(
+    val label: String,
+    val icon: ImageVector,
+    val isDestructive: Boolean = false,
+    val onClick: () -> Unit,
+)
+
+/**
+ * The pill row at the bottom of the hero card. Pills go inert once the hero has faded far
+ * enough out ([enabled]), so a tap mid-collapse cannot fire an action that is no longer visible.
+ */
+@Composable
+internal fun HeroActionPillRow(
+    actions: List<HeroActionItem>,
+    contentColor: Color,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        actions.forEachIndexed { index, action ->
+            val shape = expressiveHorizontalGroupShape(index = index, count = actions.size)
+            val pillContainer = if (action.isDestructive) {
+                MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
+            } else {
+                contentColor.copy(alpha = 0.14f)
+            }
+            Surface(
+                onClick = action.onClick,
+                enabled = enabled,
+                shape = shape,
+                color = pillContainer,
+                contentColor = contentColor,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        imageVector = action.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = action.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The collapsing header itself: the hero card with the compact row pinned over its bottom
+ * edge, cross-faded by [CollapsingDetailHeaderState.collapseFraction] while the container
+ * shrinks from the hero's measured height to the compact row's. [hero] renders the card and
+ * receives the pill row to place as its actions; the compact row is built here from
+ * [heroActions] (see [splitHeroActionIndices]).
+ */
+@Composable
+internal fun CollapsingDetailHeader(
+    state: CollapsingDetailHeaderState,
+    heroActions: List<HeroActionItem>,
+    runtime: ServerRuntimeState,
+    containerColor: Color,
+    contentColor: Color,
+    badgeIcon: ImageVector,
+    hero: @Composable (actions: @Composable RowScope.() -> Unit) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val (heroAlpha, compactAlpha) = CollapsingHeaderMath.crossfadeAlphas(state.collapseFraction)
+    val compactSplit = splitHeroActionIndices(heroActions.map { it.label })
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (state.expandedHeightPx > 0f) {
+                    Modifier.height(with(density) { state.headerHeightPx.toDp() })
+                } else {
+                    Modifier
+                },
+            )
+            .clip(RoundedCornerShape(28.dp)),
+    ) {
+        Box(
+            modifier = Modifier
+                // Whichever half is interactive sits on top. Alpha does not remove the other
+                // half from hit-testing, so the compact row laid over the hero swallowed the
+                // pills' taps while fully transparent.
+                .zIndex(if (state.isHeroInteractive) 1f else 0f)
+                // Measured at its natural height however far the container has collapsed. Under
+                // the height()-sized container the hero reported the clipped height back as its
+                // expanded height, which shrank the collapse range to nothing and left the
+                // header stuck. onSizeChanged must stay inside the unbounded measurement.
+                .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                .onSizeChanged { state.expandedHeightPx = it.height.toFloat() }
+                .alpha(heroAlpha)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+            hero {
+                HeroActionPillRow(
+                    actions = heroActions,
+                    contentColor = contentColor,
+                    enabled = state.isHeroInteractive,
+                )
+            }
+        }
+        CompactDetailHeaderRow(
+            runtime = runtime,
+            containerColor = containerColor,
+            contentColor = contentColor,
+            badgeIcon = badgeIcon,
+            sshAction = heroActions.getOrNull(compactSplit.primaryIndex),
+            overflowActions = compactSplit.overflowIndices.mapNotNull { heroActions.getOrNull(it) },
+            isInteractive = state.isCompactInteractive,
+            onExpand = { state.expandAnimated() },
+            onMeasuredHeight = { state.compactHeightPx = it.toFloat() },
+            modifier = Modifier
+                .zIndex(if (state.isCompactInteractive) 1f else 0f)
+                .align(Alignment.BottomCenter)
+                .alpha(compactAlpha),
+        )
+    }
+}
 
 /**
  * Drives the collapsing detail header of [ServerDetailPane] (Phase 5). Both heights are
