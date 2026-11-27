@@ -1,5 +1,6 @@
 package com.raulshma.grack.core.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -49,7 +50,7 @@ private val ARCH_DISTRO_IDS = setOf("arch", "archarm", "manjaro", "endeavouros",
 /** Outcome of one node's OS update-check probe. */
 @Serializable
 enum class OsScanStatus {
-    /** Probe ran; the package list below is authoritative (possibly empty). */
+    /** Probe ran against a freshly refreshed index; the package list below is authoritative (possibly empty). */
     OK,
 
     /** The distro family is unsupported or its check tool is missing (e.g. no `checkupdates`). */
@@ -57,6 +58,14 @@ enum class OsScanStatus {
 
     /** The probe failed (connection, package-manager error such as `dnf` exit 1). */
     FAILED,
+
+    /**
+     * The listing ran, but the package index could not be refreshed first — apt and apk need
+     * root for that. [OsUpdateSection.packages] is then a lower bound from the stale index,
+     * never proof that the node is up to date; [OsUpdateSection.detail] says why the refresh
+     * did not happen and what to change on the node.
+     */
+    STALE,
 }
 
 /** One pending OS package update. [currentVersion] is unavailable from `dnf check-update`. */
@@ -126,10 +135,28 @@ data class NodeUpdateReport(
     val containers: List<ContainerUpdateEntry> = emptyList(),
     /** Set after a successful OS apply whose reboot-recommendation probe returned true. */
     val rebootRecommended: Boolean = false,
+    /**
+     * Why the container verdicts are not a complete registry check — Podman (no registry
+     * comparison at all), a registry pass that failed or timed out, lookups the registry
+     * refused — or "" when they are. When set after a failed pass, [containers] still holds
+     * the previous scan's verdicts.
+     */
+    val containerScanDetail: String = "",
 ) {
     val osUpdateCount: Int get() = os?.packages?.size ?: 0
     val containerUpdateCount: Int get() = containers.count { it.status == ContainerUpdateStatus.UPDATE_AVAILABLE }
+    /** Containers whose currency could not be determined (registry silent, no buildx, Podman). */
+    val undeterminedContainerCount: Int get() = containers.count { it.status == ContainerUpdateStatus.UNKNOWN }
     val hasAnyUpdates: Boolean get() = osUpdateCount > 0 || containerUpdateCount > 0
+
+    /** How the container verdicts split, for the card, the scan banner and the scan's ledger entry. */
+    val containerTally: ContainerTally
+        get() = ContainerTally(
+            withUpdates = containerUpdateCount,
+            upToDate = containers.count { it.status == ContainerUpdateStatus.UP_TO_DATE },
+            pinnedOrLocal = containers.count { it.status == ContainerUpdateStatus.PINNED || it.status == ContainerUpdateStatus.LOCAL },
+            undetermined = undeterminedContainerCount,
+        )
 
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
@@ -140,6 +167,15 @@ data class NodeUpdateReport(
                 ?.let { runCatching { json.decodeFromString<NodeUpdateReport>(it) }.getOrNull() }
     }
 }
+
+/** How a report's container verdicts split; every container is in exactly one bucket. */
+@Immutable
+data class ContainerTally(
+    val withUpdates: Int = 0,
+    val upToDate: Int = 0,
+    val pinnedOrLocal: Int = 0,
+    val undetermined: Int = 0,
+)
 
 /**
  * Applies the persisted scan report's container verdicts to freshly fetched containers:

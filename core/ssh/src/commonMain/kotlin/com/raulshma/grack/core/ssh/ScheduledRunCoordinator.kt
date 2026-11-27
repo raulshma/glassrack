@@ -237,7 +237,7 @@ class ScheduledRunCoordinator(
     }
 
     private suspend fun executeAutoUpdateCycle(server: Server): AutoUpdateRunSummary {
-        val report = controller.scanNodeUpdates(server)
+        val report = controller.scanNodeUpdates(server, vault, TriggerSource.SCHEDULED)
 
         var osApplyAttempted = false
         var osApplyExitCode: Int? = null
@@ -308,7 +308,7 @@ class ScheduledRunCoordinator(
         }
 
         // Refresh the persisted report so the Overview card reflects the new state.
-        runCatching { controller.scanNodeUpdates(server) }
+        runCatching { controller.scanNodeUpdates(server, vault, TriggerSource.SCHEDULED) }
             .onFailure { Logger.w(it) { "Post-apply rescan failed for ${server.name}" } }
 
         return AutoUpdateRunSummary(

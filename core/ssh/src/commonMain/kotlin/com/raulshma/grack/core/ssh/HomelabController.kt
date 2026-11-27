@@ -39,11 +39,13 @@ import com.raulshma.grack.core.security.SecureVault
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -101,7 +103,11 @@ class HomelabController(
     /** Consecutive failed polls per server; drives SERVER_OFFLINE alerts (item: offline alerts). */
     private val consecutiveFailures = MutableStateFlow<Map<String, Int>>(emptyMap())
 
-    /** serverId -> epoch ms until which a successful `sudo -n true` probe stays trusted. */
+    /**
+     * `serverId|username` -> epoch ms until which a successful `sudo -n true` probe stays
+     * trusted. Keyed by the login user as well as the node: sudo rights belong to a user, and
+     * a node re-pointed from a passwordless account to a normal one must not inherit the trust.
+     */
     private val passwordlessSudoUntilMs = mutableMapOf<String, Long>()
     private val sudoProbeMutex = Mutex()
 
@@ -542,39 +548,48 @@ class HomelabController(
         timeoutMs: Long = DEFAULT_ACTION_TIMEOUT_MS,
         streaming: Boolean = false,
     ): SshExecResult {
-        return when (resolvePrivilegeMode(server, vault)) {
-            PrivilegeMode.ROOT ->
-                executeAuditedAction(server, category, actionTitle, command, triggerSource, streaming, timeoutMs)
+        val resolved = resolvePrivilegedCommand(server, command, vault)
+        return executeAuditedAction(
+            server,
+            category,
+            actionTitle,
+            resolved.command,
+            triggerSource,
+            streaming,
+            timeoutMs,
+            stdinText = resolved.stdinText,
+        )
+    }
+
+    /** A privileged command resolved to exactly what the transport receives; the password rides only [stdinText]. */
+    private data class PrivilegedCommand(
+        val command: String,
+        val stdinText: String?,
+        val mode: PrivilegeMode,
+    )
+
+    /**
+     * The resolution order of [executePrivileged], shared by every privileged path — audited
+     * actions and the update scan's index refresh alike — so they all escalate identically
+     * and a new privileged caller cannot invent its own sudo wording.
+     */
+    private suspend fun resolvePrivilegedCommand(server: Server, command: String, vault: SecureVault): PrivilegedCommand =
+        when (val mode = resolvePrivilegeMode(server, vault)) {
+            PrivilegeMode.ROOT -> PrivilegedCommand(command, null, mode)
             PrivilegeMode.PASSWORDLESS_SUDO ->
-                executeAuditedAction(
-                    server, category, actionTitle, "sudo -n bash -c ${shellQuote(command)}", triggerSource, streaming, timeoutMs,
-                )
+                PrivilegedCommand("sudo -n bash -c ${shellQuote(command)}", null, mode)
             PrivilegeMode.SUDO_WITH_CREDENTIAL -> {
                 val sudoPassword = sudoPasswordFor(server, vault)
                 if (sudoPassword.isNullOrEmpty()) {
                     // The credential vanished between resolution and use; fail safe to the fallback.
-                    executeAuditedAction(
-                        server, category, actionTitle, unprivilegedFallbackCommand(command), triggerSource, streaming, timeoutMs,
-                    )
+                    PrivilegedCommand(unprivilegedFallbackCommand(command), null, PrivilegeMode.UNPRIVILEGED_FALLBACK)
                 } else {
-                    executeAuditedAction(
-                        server,
-                        category,
-                        actionTitle,
-                        "sudo -S -p '' bash -c ${shellQuote(command)}",
-                        triggerSource,
-                        streaming,
-                        timeoutMs,
-                        stdinText = "$sudoPassword\n",
-                    )
+                    PrivilegedCommand("sudo -S -p '' bash -c ${shellQuote(command)}", "$sudoPassword\n", mode)
                 }
             }
             PrivilegeMode.UNPRIVILEGED_FALLBACK ->
-                executeAuditedAction(
-                    server, category, actionTitle, unprivilegedFallbackCommand(command), triggerSource, streaming, timeoutMs,
-                )
+                PrivilegedCommand(unprivilegedFallbackCommand(command), null, mode)
         }
-    }
 
     /** Resolution order of [executePrivileged]; see its KDoc. */
     private suspend fun resolvePrivilegeMode(server: Server, vault: SecureVault): PrivilegeMode {
@@ -587,8 +602,9 @@ class HomelabController(
     /** Probes `sudo -n true` (no password, no prompt) and caches success for [SUDO_PROBE_TTL_MS]. */
     private suspend fun hasFreshPasswordlessSudo(server: Server): Boolean {
         val now = currentTimeEpochMs()
+        val cacheKey = "${server.id}|${server.username}"
         sudoProbeMutex.withLock {
-            val until = passwordlessSudoUntilMs[server.id]
+            val until = passwordlessSudoUntilMs[cacheKey]
             if (until != null && now < until) return true
         }
         val probe = runCatching {
@@ -597,9 +613,9 @@ class HomelabController(
         val passwordless = probe != null && probe.exitCode == 0
         sudoProbeMutex.withLock {
             if (passwordless) {
-                passwordlessSudoUntilMs[server.id] = currentTimeEpochMs() + SUDO_PROBE_TTL_MS
+                passwordlessSudoUntilMs[cacheKey] = currentTimeEpochMs() + SUDO_PROBE_TTL_MS
             } else {
-                passwordlessSudoUntilMs.remove(server.id)
+                passwordlessSudoUntilMs.remove(cacheKey)
             }
         }
         return passwordless
@@ -784,33 +800,343 @@ class HomelabController(
     // Phase 3B — update scan and manual apply
     // ------------------------------------------------------------------
 
+    /** The OS half of a node scan while it runs: what was found, what was sent, what went wrong. */
+    private class OsScanRun(val family: DistroFamily) {
+        var section: OsUpdateSection =
+            OsUpdateSection(family = family, status = OsScanStatus.FAILED, detail = "Scan did not run")
+        var refresh: IndexRefreshResult = IndexRefreshResult(refreshed = false)
+        /** True when the refresh or the listing ran out of its own budget (not caller cancellation). */
+        var timedOut = false
+        /** Commands the transport received, for the scan's single audit entry. */
+        val commands = mutableListOf<String>()
+        /** Whether the container registry pass ran, for the audit snippet. */
+        var hadDocker = false
+    }
+
     /**
-     * Runs the distro-appropriate OS update check ([UpdateProbes.updateCheckScript], selected
-     * by `capabilities.distroId`) and parses it into an [OsUpdateSection]. `dnf`'s exit 100 is
-     * success-with-updates, not failure; connection errors become a FAILED section rather than
-     * an exception so one unreachable node cannot sink a cluster-wide scan.
+     * The OS half of a node scan on its own. For tests only: it refreshes the package index
+     * on the node without writing a ledger entry — [scanNodeUpdates] is the entry point
+     * production code uses, and the one that audits.
      */
-    suspend fun scanOsUpdates(server: Server): OsUpdateSection {
-        val family = distroFamilyForDistroId(server.capabilities.distroId)
-        return runCatching {
-            val res = sshClient.execute(
-                server,
-                latestServers,
-                UpdateProbes.updateCheckScript(server.capabilities),
-                OS_UPDATE_SCAN_TIMEOUT_MS,
+    internal suspend fun scanOsUpdates(server: Server, vault: SecureVault): OsUpdateSection {
+        val run = OsScanRun(distroFamilyForDistroId(server.capabilities.distroId))
+        runOsScan(server, vault, run)
+        return run.section
+    }
+
+    /**
+     * One node's OS update check: the package-index refresh — apt and apk need root for it,
+     * so it goes over the node's privilege path (root login, passwordless sudo or the stored
+     * sudo credential) — followed by the read-only listing ([UpdateProbes.updateListScript]).
+     *
+     * A refresh that cannot run is never discarded: the listing is demoted to
+     * [OsScanStatus.STALE] with the reason in its detail, instead of passing an old index off
+     * as "up to date". Connection errors and timeouts end in a FAILED section rather than an
+     * exception, so one unreachable node cannot sink a cluster-wide scan; cancellation of the
+     * caller propagates. Fills [run]; not audited here — it is one half of [scanNodeUpdates],
+     * which writes the scan's single entry.
+     */
+    private suspend fun runOsScan(server: Server, vault: SecureVault, run: OsScanRun) {
+        run.refresh = refreshPackageIndex(server, run.family, vault, run)
+        run.section = listUpgradable(server, run.family, run)
+        if (run.section.status == OsScanStatus.OK && !run.refresh.refreshed) {
+            val listed = run.section.packages.size
+            run.section = run.section.copy(
+                status = OsScanStatus.STALE,
+                detail = "Package index ${if (run.refresh.partial) "only partly" else "not"} refreshed — ${run.refresh.reason}. " +
+                    if (listed == 0) {
+                        "Nothing is listed, but that only reflects the old index — the node may still have updates"
+                    } else {
+                        "The $listed listed come from the old index: a lower bound, not the full count"
+                    },
             )
-            if (res.exitCode != 0 || !res.stdout.contains("===OSUPD===")) {
-                OsUpdateSection(
-                    family = family,
-                    status = OsScanStatus.FAILED,
-                    packages = emptyList(),
-                    detail = res.stderr.ifBlank { "exit ${res.exitCode}" }.take(200),
+        }
+    }
+
+    /**
+     * Refreshes the package index for the families whose refresh needs root (apt: `apt-get
+     * update` exits 100 unprivileged; apk: `apk update` exits 99). dnf and `checkupdates`
+     * refresh into a per-user cache and need nothing here. When there is no privilege path
+     * the refresh is not attempted at all — running it unprivileged can only fail — and the
+     * reason names what to change on the node.
+     *
+     * Exit 0 is not the whole story for apt: a repository it cannot reach or trust is a
+     * warning to `apt-get update`, which still exits 0 — so the output is read as well
+     * ([UpdateParsers.indexRefreshGap]) and a partly refreshed index is reported as such.
+     */
+    private suspend fun refreshPackageIndex(
+        server: Server,
+        family: DistroFamily,
+        vault: SecureVault,
+        run: OsScanRun,
+    ): IndexRefreshResult {
+        val command = UpdateProbes.indexRefreshCommand(family)
+        if (command.isBlank()) return IndexRefreshResult(refreshed = true)
+        if (repository.preferences.first().safeReadOnlyMode) {
+            // The refresh rewrites the node's package index; read-only mode keeps scans strictly read-only.
+            return IndexRefreshResult(
+                refreshed = false,
+                reason = "Safe Read-Only Mode blocks the index refresh",
+                blocked = true,
+            )
+        }
+        val resolved = resolvePrivilegedCommand(server, command, vault)
+        if (resolved.mode == PrivilegeMode.UNPRIVILEGED_FALLBACK) {
+            return IndexRefreshResult(refreshed = false, reason = noPrivilegePathReason(server))
+        }
+        run.commands += resolved.command
+        return try {
+            val res = sshClient.execute(server, latestServers, resolved.command, INDEX_REFRESH_TIMEOUT_MS, resolved.stdinText)
+            if (res.exitCode == 0) {
+                val gap = UpdateParsers.indexRefreshGap(res.stdout, res.stderr)
+                IndexRefreshResult(
+                    refreshed = gap == null,
+                    partial = gap != null,
+                    via = privilegePathLabel(resolved.mode),
+                    command = resolved.command,
+                    reason = gap.orEmpty(),
                 )
+            } else {
+                // What the node printed, in plain words — a rejected sudo password must not hide behind "exit 1".
+                IndexRefreshResult(
+                    refreshed = false,
+                    command = resolved.command,
+                    reason = UpdateParsers.explainPrivilegedFailure(res, server.username),
+                )
+            }
+        } catch (timeout: TimeoutCancellationException) {
+            run.timedOut = true
+            IndexRefreshResult(refreshed = false, command = resolved.command, reason = "the refresh timed out")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            Logger.w(t) { "Package index refresh failed for ${server.name}" }
+            IndexRefreshResult(refreshed = false, command = resolved.command, reason = t.message ?: "refresh failed")
+        }
+    }
+
+    private suspend fun listUpgradable(server: Server, family: DistroFamily, run: OsScanRun): OsUpdateSection {
+        run.commands += UpdateProbes.indexListSummary(family)
+        return try {
+            val res = sshClient.execute(server, latestServers, UpdateProbes.updateListScript(server.capabilities), OS_UPDATE_SCAN_TIMEOUT_MS)
+            if (res.exitCode != 0 || !res.stdout.contains("===OSUPD===")) {
+                OsUpdateSection(family, OsScanStatus.FAILED, detail = res.stderr.ifBlank { "exit ${res.exitCode}" }.take(200))
             } else {
                 UpdateParsers.parseOsUpdateSection(res.stdout, family)
             }
-        }.onFailure { Logger.w(it) { "OS update scan failed for ${server.name}" } }
-            .getOrElse { OsUpdateSection(family, OsScanStatus.FAILED, emptyList(), it.message ?: "Scan failed") }
+        } catch (timeout: TimeoutCancellationException) {
+            run.timedOut = true
+            OsUpdateSection(family, OsScanStatus.FAILED, detail = "Listing timed out after ${OS_UPDATE_SCAN_TIMEOUT_MS / 1000}s")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            Logger.w(t) { "OS update scan failed for ${server.name}" }
+            OsUpdateSection(family, OsScanStatus.FAILED, detail = t.message ?: "Scan failed")
+        }
+    }
+
+    private fun privilegePathLabel(mode: PrivilegeMode): String = when (mode) {
+        PrivilegeMode.ROOT -> "root login"
+        PrivilegeMode.PASSWORDLESS_SUDO -> "passwordless sudo"
+        PrivilegeMode.SUDO_WITH_CREDENTIAL -> "stored sudo password"
+        PrivilegeMode.UNPRIVILEGED_FALLBACK -> "no privilege path"
+    }
+
+    private fun noPrivilegePathReason(server: Server): String =
+        "'${server.username}' is neither root nor allowed passwordless sudo, and no sudo password is stored " +
+            "for this node — set one under Edit node → Privilege Escalation"
+
+    /**
+     * Full node scan, audited once. The OS half (refresh + listing) is persisted and handed to
+     * [onOsScanned] before the container registry pass starts, so a node with many containers
+     * shows its package count within seconds instead of after every registry probe; the
+     * finished report — per-container verdicts included — is persisted into
+     * `servers.updateReportJson` and returned.
+     *
+     * Exactly one audit entry per scan, whatever happens: SUCCESS when the OS listing ran on a
+     * fresh index, FAILED when it did not or ran against an index that could not be refreshed
+     * (STALE), BLOCKED when Safe Read-Only Mode refused the refresh, TIMEOUT when a step
+     * outlived its own budget, CANCELLED when the caller went away first. TIMEOUT and
+     * CANCELLED are written under `NonCancellable` so cancellation cannot skip them; a
+     * container pass that fails does not fail the scan — its outcome is stated in the entry's
+     * snippet and in the report. Cancellation propagates after its entry is written.
+     */
+    suspend fun scanNodeUpdates(
+        server: Server,
+        vault: SecureVault,
+        triggerSource: TriggerSource = TriggerSource.UI,
+        onOsScanned: (suspend (NodeUpdateReport) -> Unit)? = null,
+    ): NodeUpdateReport {
+        val started = currentTimeEpochMs()
+        val run = OsScanRun(distroFamilyForDistroId(server.capabilities.distroId))
+        val report = try {
+            scanBothHalves(server, vault, run, onOsScanned)
+        } catch (cancelled: CancellationException) {
+            // Leaving the screen cancels an in-flight scan; the ledger still gets its entry.
+            withContext(NonCancellable) {
+                recordScanAudit(server, run, triggerSource, null, currentTimeEpochMs() - started)
+            }
+            throw cancelled
+        }
+        withContext(NonCancellable) {
+            recordScanAudit(server, run, triggerSource, report, currentTimeEpochMs() - started)
+        }
+        return report
+    }
+
+    /** Both halves of [scanNodeUpdates] in order; throws only on caller cancellation. */
+    private suspend fun scanBothHalves(
+        server: Server,
+        vault: SecureVault,
+        run: OsScanRun,
+        onOsScanned: (suspend (NodeUpdateReport) -> Unit)?,
+    ): NodeUpdateReport {
+        runOsScan(server, vault, run)
+
+        val previous = NodeUpdateReport.fromJson(server.updateReportJson)
+        val partial = NodeUpdateReport(
+            scannedAtEpochMs = currentTimeEpochMs(),
+            os = run.section,
+            // Container verdicts and the reboot flag carry over until this scan's own registry pass replaces them.
+            containers = previous?.containers.orEmpty(),
+            rebootRecommended = previous?.rebootRecommended ?: false,
+        )
+        persistUpdateReport(server.id, partial)
+        onOsScanned?.invoke(partial)
+
+        run.hadDocker = server.capabilities.hasDocker
+        val containerScan = if (run.hadDocker) containerPass(server, partial, run) else null
+        val report = partial.copy(
+            containers = containerScan?.entries.orEmpty(),
+            containerScanDetail = containerScan?.let { containerScanDetail(it, partial.containers.isNotEmpty()) }.orEmpty(),
+        )
+        persistUpdateReport(server.id, report)
+
+        val buildxProbed = containerScan?.probedRefCount ?: 0
+        val bin = containerRuntimeFor(server).binaryName
+        if (buildxProbed > 0) {
+            run.commands += "$bin buildx imagetools inspect ×$buildxProbed image${if (buildxProbed == 1) "" else "s"}"
+        }
+        val fallbackProbed = containerScan?.fallbackRefCount ?: 0
+        if (fallbackProbed > 0) {
+            run.commands += "$bin manifest inspect -v ×$fallbackProbed image${if (fallbackProbed == 1) "" else "s"}"
+        }
+        return report
+    }
+
+    /**
+     * The container half of a scan. Node-side trouble never throws here: it degrades to a
+     * result that keeps the previous verdicts and says why they are not fresh. Caller
+     * cancellation propagates.
+     */
+    private suspend fun containerPass(server: Server, partial: NodeUpdateReport, run: OsScanRun): ContainerUpdateScanResult {
+        val result = try {
+            scanContainerUpdates(server)
+        } catch (timeout: TimeoutCancellationException) {
+            // The container listing itself ran out of its budget.
+            run.timedOut = true
+            ContainerUpdateScanResult(partial.containers, emptyList(), detail = "the container check timed out", keptPreviousVerdicts = true)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            Logger.w(t) { "Container update scan failed for ${server.name}" }
+            ContainerUpdateScanResult(
+                partial.containers,
+                emptyList(),
+                detail = "the container check failed (${t.message ?: "no error detail"})",
+                keptPreviousVerdicts = true,
+            )
+        }
+        if (result.timedOut) run.timedOut = true
+        return result
+    }
+
+    /** The report's `containerScanDetail`: what is incomplete about the container half, or "" when nothing is. */
+    private fun containerScanDetail(result: ContainerUpdateScanResult, hasPreviousVerdicts: Boolean): String {
+        val detail = result.detail ?: return ""
+        return if (result.keptPreviousVerdicts && hasPreviousVerdicts) "$detail — showing the previous scan's verdicts" else detail
+    }
+
+    private suspend fun persistUpdateReport(serverId: String, report: NodeUpdateReport) {
+        runCatching { repository.updateUpdateReport(serverId, reportJson.encodeToString(report)) }
+            .onFailure { Logger.w(it) { "Update report persistence failed for ${serverId}" } }
+    }
+
+    /**
+     * The scan's one ledger entry. With [report] == null the caller went away first (CANCELLED);
+     * a step that outlived its own budget still yields a report, recorded as TIMEOUT.
+     */
+    private suspend fun recordScanAudit(
+        server: Server,
+        run: OsScanRun,
+        triggerSource: TriggerSource,
+        report: NodeUpdateReport?,
+        durationMs: Long,
+    ) {
+        val os = report?.os ?: run.section
+        val outcome = when {
+            report == null -> AuditOutcome.CANCELLED
+            run.timedOut -> AuditOutcome.TIMEOUT
+            run.refresh.blocked -> AuditOutcome.BLOCKED
+            os.status == OsScanStatus.FAILED || os.status == OsScanStatus.STALE -> AuditOutcome.FAILED
+            else -> AuditOutcome.SUCCESS
+        }
+        repository.recordAudit(
+            timestampEpochMs = currentTimeEpochMs(),
+            serverId = server.id,
+            serverNameSnapshot = server.name,
+            category = AuditCategory.SYSTEM,
+            actionTitle = "Scan for updates",
+            rawCommand = run.commands.joinToString("; ").ifBlank { "(no command was sent)" },
+            triggerSource = triggerSource,
+            outcome = outcome,
+            exitCode = if (outcome == AuditOutcome.SUCCESS) 0 else -1,
+            durationMs = durationMs,
+            outputSnippet = scanAuditSnippet(run, report),
+        )
+    }
+
+    private fun scanAuditSnippet(run: OsScanRun, report: NodeUpdateReport?): String {
+        if (report == null) {
+            val why = run.section.detail.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+            return "Cancelled before the scan completed$why."
+        }
+        val os = report.os ?: return "No OS section was produced."
+        val count = os.packages.size
+        val osLine = when (os.status) {
+            OsScanStatus.OK -> {
+                val tally = if (count == 0) "0 pending (up to date)" else "$count pending"
+                val via = run.refresh.via.takeIf { it.isNotBlank() }?.let { "; index refreshed via $it" }.orEmpty()
+                "${managerLabel(os.family)}: $tally$via"
+            }
+            OsScanStatus.STALE -> "${managerLabel(os.family)}: $count pending from a STALE index — ${run.refresh.reason}"
+            OsScanStatus.UNSUPPORTED -> "${managerLabel(os.family)}: unsupported (${os.detail})"
+            OsScanStatus.FAILED -> "${managerLabel(os.family)}: scan failed (${os.detail})"
+        }
+        val containerLine = if (!run.hadDocker) {
+            "containers: none (no docker on this node)"
+        } else if (report.containers.isEmpty()) {
+            "containers: nothing to check"
+        } else {
+            val tally = report.containerTally
+            val parts = buildList {
+                if (tally.withUpdates > 0) add("${tally.withUpdates} with updates")
+                if (tally.upToDate > 0) add("${tally.upToDate} up to date")
+                if (tally.pinnedOrLocal > 0) add("${tally.pinnedOrLocal} pinned or local")
+                if (tally.undetermined > 0) add("${tally.undetermined} undetermined")
+            }
+            val incomplete = report.containerScanDetail.takeIf { it.isNotBlank() }?.let { " — $it" }.orEmpty()
+            "containers: ${parts.joinToString(", ")} of ${report.containers.size}$incomplete"
+        }
+        return "$osLine. $containerLine."
+    }
+
+    private fun managerLabel(family: DistroFamily): String = when (family) {
+        DistroFamily.DEBIAN -> "apt"
+        DistroFamily.RHEL -> "dnf"
+        DistroFamily.ARCH -> "pacman"
+        DistroFamily.ALPINE -> "apk"
+        DistroFamily.UNSUPPORTED -> "OS"
     }
 
     /**
@@ -819,6 +1145,11 @@ class HomelabController(
      * digest-pinned -> PINNED, no RepoDigests -> LOCAL, buildx index-digest comparison,
      * classic-store fallback via `manifest inspect -v`, everything else UNKNOWN.
      * Returned containers carry [ContainerInfo.updateAvailable] from the verdicts.
+     *
+     * The registry is asked in one round trip per wave, not once per image: all distinct
+     * references are probed concurrently on the node ([UpdateProbes.containerDigestBatchScript]).
+     * Sequential per-image probes took well over a minute on a node with ~20 images, and
+     * "Scan now" looked like it did nothing.
      */
     suspend fun scanContainerUpdates(server: Server): ContainerUpdateScanResult {
         val containers = fetchContainers(server)
@@ -829,13 +1160,67 @@ class HomelabController(
             return ContainerUpdateScanResult(
                 containers.map { it.toUnknownUpdateEntry() },
                 containers,
+                detail = PODMAN_UNSUPPORTED_DETAIL,
             )
         }
-        val images = runCatching { fetchImages(server) }
+        val bin = ContainerRuntime.DOCKER.binaryName
+        val images = runCatching { fetchImagesForUpdateScan(server) }
             .onFailure { Logger.w(it) { "Image listing failed during update scan" } }
             .getOrDefault(emptyList())
         val imageByRef = images.associateBy { normalizedImageRef(it.repository, it.tag) }
-        val probeCache = mutableMapOf<String, ContainerDigestProbe>()
+
+        // Only images with a registry identity are probed, each distinct reference once: a
+        // bare `nginx` and `nginx:latest` are the same registry request.
+        val refsToProbe = containers.mapNotNull { container ->
+            val image = imageByRef[normalizedImageRef(container.image)]
+            if (container.image.contains('@') || image == null || image.digest.isBlank()) {
+                null
+            } else {
+                normalizedImageRef(container.image)
+            }
+        }.distinct()
+
+        var batchFailure: String? = null
+        var registryTimedOut = false
+        fun batchFailed(reason: String, timedOut: Boolean) {
+            batchFailure = batchFailure ?: reason
+            registryTimedOut = registryTimedOut || timedOut
+        }
+        val buildxOutput = if (refsToProbe.isEmpty()) {
+            null
+        } else {
+            runRegistryBatch(
+                server,
+                UpdateProbes.containerDigestBatchScript(bin, refsToProbe),
+                registryBatchTimeoutMs(refsToProbe.size),
+            ) { reason, timedOut -> batchFailed(reason, timedOut) }
+        }
+        val driver = UpdateParsers.parseStoreDriver(buildxOutput)
+        val buildxAvailable = UpdateParsers.parseBuildxAvailable(buildxOutput)
+        val buildxProbes = UpdateParsers.parseContainerDigestBatch(buildxOutput, refsToProbe, driver)
+
+        // buildx absent or refused: ask the registry the older way, but only where the answer
+        // means something (classic store, where image ids are still config digests).
+        val classicStore = driver.isNotBlank() && driver != UpdateProbes.CONTAINERD_STORE_DRIVER
+        val fallbackRefs = if (classicStore) {
+            refsToProbe.filter { !buildxProbes.getValue(it).buildxAnswered }
+        } else {
+            emptyList()
+        }
+        val fallbackOutput = if (fallbackRefs.isEmpty()) {
+            null
+        } else {
+            runRegistryBatch(
+                server,
+                UpdateProbes.containerManifestBatchScript(bin, fallbackRefs),
+                registryBatchTimeoutMs(fallbackRefs.size),
+            ) { reason, timedOut -> batchFailed(reason, timedOut) }
+        }
+        val fallbackProbes = UpdateParsers.parseContainerManifestBatch(fallbackOutput, fallbackRefs, driver)
+        val probes = buildxProbes.mapValues { (ref, probe) ->
+            fallbackProbes[ref]?.let { probe.copy(manifestDigests = it.manifestDigests, manifestExit = it.manifestExit) } ?: probe
+        }
+
         val entries = containers.map { container ->
             val ref = container.image
             when {
@@ -864,17 +1249,11 @@ class HomelabController(
                             status = ContainerUpdateStatus.LOCAL,
                         )
                         else -> {
-                            val probe = probeCache.getOrPut(ref) {
-                                UpdateParsers.parseContainerDigestProbe(runCatching {
-                                    sshClient.execute(
-                                        server,
-                                        latestServers,
-                                        UpdateProbes.containerDigestProbeScript(containerRuntimeFor(server).binaryName, ref),
-                                        CONTAINER_DIGEST_PROBE_TIMEOUT_MS,
-                                    ).stdout
-                                }.onFailure { Logger.w(it) { "Digest probe failed for $ref" } }.getOrNull())
-                            }
-                            val decision = UpdateParsers.decideContainerUpdate(image.digest, image.id, probe)
+                            val decision = UpdateParsers.decideContainerUpdate(
+                                image.digest,
+                                image.id,
+                                probes.getValue(normalizedImageRef(ref)),
+                            )
                             ContainerUpdateEntry(
                                 containerName = container.name,
                                 image = ref,
@@ -896,33 +1275,64 @@ class HomelabController(
         return ContainerUpdateScanResult(
             entries = entries,
             containers = containers.map { it.copy(updateAvailable = it.name in updateNames) },
+            detail = batchFailure ?: incompleteLookupDetail(probes.values, buildxAvailable),
+            probedRefCount = refsToProbe.size,
+            fallbackRefCount = fallbackRefs.size,
+            timedOut = registryTimedOut,
         )
     }
 
+    /** Full image ids for the update scan ([UpdateProbes.updateScanImagesScript]); parsed like the Images tab's listing. */
+    private suspend fun fetchImagesForUpdateScan(server: Server): List<ContainerImageInfo> {
+        val res = sshClient.execute(server, latestServers, UpdateProbes.updateScanImagesScript(ContainerRuntime.DOCKER.binaryName), 15_000L)
+        return TelemetryParsers.parseImages(res.stdout)
+    }
+
     /**
-     * Full node scan: OS check + container verdicts, persisted as JSON into
-     * `servers.updateReportJson` so the Overview card renders counts without scanning again.
-     * A container scan runs only on docker nodes; a failed OS scan is recorded as FAILED
-     * rather than aborting the whole report.
+     * Why some probed images stayed without an answer, for the report: a node without the
+     * buildx plugin, or lookups the registry did not answer. Null when every lookup answered.
      */
-    suspend fun scanNodeUpdates(server: Server): NodeUpdateReport {
-        val os = scanOsUpdates(server)
-        val containerScan = if (server.capabilities.hasDocker) {
-            runCatching { scanContainerUpdates(server) }
-                .onFailure { Logger.w(it) { "Container update scan failed for ${server.name}" } }
-                .getOrDefault(ContainerUpdateScanResult(emptyList(), emptyList()))
-        } else {
-            ContainerUpdateScanResult(emptyList(), emptyList())
+    private fun incompleteLookupDetail(probes: Collection<ContainerDigestProbe>, buildxAvailable: Boolean?): String? {
+        val unanswered = probes.count { !it.answered }
+        if (unanswered == 0) return null
+        if (buildxAvailable == false) {
+            return "buildx is not installed on this node ($unanswered of ${probes.size} images undetermined)"
         }
-        val report = NodeUpdateReport(
-            scannedAtEpochMs = currentTimeEpochMs(),
-            os = os,
-            containers = containerScan.entries,
-        )
-        runCatching {
-            repository.updateUpdateReport(server.id, reportJson.encodeToString(report))
-        }.onFailure { Logger.w(it) { "Update report persistence failed for ${server.name}" } }
-        return report
+        return UpdateParsers.describeFailedProbes(probes)
+    }
+
+    /**
+     * One batched registry round trip. Null — with [onFailure] told why — when the transport
+     * errored or the batch outlived its budget; the probes then stay "no record" and their
+     * verdicts UNKNOWN. Caller cancellation propagates.
+     */
+    private suspend fun runRegistryBatch(
+        server: Server,
+        script: String,
+        timeoutMs: Long,
+        onFailure: (reason: String, timedOut: Boolean) -> Unit,
+    ): String? = try {
+        sshClient.execute(server, latestServers, script, timeoutMs).stdout
+    } catch (timeout: TimeoutCancellationException) {
+        onFailure("registry probes timed out after ${timeoutMs / 1000}s", true)
+        null
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (t: Throwable) {
+        Logger.w(t) { "Registry probe batch failed for ${server.name}" }
+        onFailure(t.message ?: "registry probes failed", false)
+        null
+    }
+
+    /**
+     * Budget for a batched registry round trip: one per-probe timeout per wave plus headroom
+     * for `docker buildx version` / `docker info`. The batch script runs
+     * [UpdateProbes.CONTAINER_PROBE_PARALLELISM] probes at a time, each cut off at
+     * [UpdateProbes.CONTAINER_PROBE_TIMEOUT_SEC], so its own worst case fits inside this.
+     */
+    private fun registryBatchTimeoutMs(refCount: Int): Long {
+        val waves = (refCount + UpdateProbes.CONTAINER_PROBE_PARALLELISM - 1) / UpdateProbes.CONTAINER_PROBE_PARALLELISM
+        return waves * UpdateProbes.CONTAINER_PROBE_TIMEOUT_SEC * 1000L + REGISTRY_BATCH_GRACE_MS
     }
 
     /**
@@ -1027,6 +1437,16 @@ class HomelabController(
      */
     suspend fun <T> withUpdateApplyLock(serverId: String, block: suspend () -> T): T =
         applyMutexFor(serverId).withLock { block() }
+
+    /**
+     * Runs [block] in the controller's own scope and hands the caller its [Deferred]. A screen
+     * that goes away while the work runs detaches from it — awaiting throws the caller's own
+     * CancellationException — but the work itself keeps going to its end: an OS upgrade cut
+     * off mid-`apt-get upgrade` would leave a node half-upgraded, so the scans and applies the
+     * Updates card asks for outlive the ViewModel that asked. `stop()` remains the one off
+     * switch, and every run still writes its own ledger entry.
+     */
+    fun <T> launchDetached(block: suspend () -> T): Deferred<T> = scope.async { block() }
 
     private fun applyMutexFor(serverId: String): Mutex =
         applyMutexes.getOrPut(serverId) { Mutex() }
@@ -1650,11 +2070,17 @@ class HomelabController(
         /** OS update-check probe budget (an `apt-get update` on a slow mirror can take a while). */
         const val OS_UPDATE_SCAN_TIMEOUT_MS: Long = 120_000L
 
+        /** Budget for the privileged package-index refresh that precedes an apt/apk listing. */
+        const val INDEX_REFRESH_TIMEOUT_MS: Long = 180_000L
+
+        /** [ContainerUpdateScanResult.detail] for Podman nodes, whose registry comparison has no stable digest to compare. */
+        const val PODMAN_UNSUPPORTED_DETAIL: String = "Podman is not supported for container update checks yet"
+
         /** OS update applies are streamed and get a 30-minute budget (Phase 3B). */
         const val OS_APPLY_TIMEOUT_MS: Long = 30 * 60_000L
 
-        /** Per-image registry digest probe budget. */
-        const val CONTAINER_DIGEST_PROBE_TIMEOUT_MS: Long = 30_000L
+        /** Headroom on top of the per-wave probe budget of a batched registry round trip. */
+        const val REGISTRY_BATCH_GRACE_MS: Long = 20_000L
 
         /** Post-apply reboot-recommendation probe budget. */
         const val REBOOT_CHECK_TIMEOUT_MS: Long = 15_000L

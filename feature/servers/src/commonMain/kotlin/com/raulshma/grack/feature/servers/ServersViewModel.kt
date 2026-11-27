@@ -11,6 +11,7 @@ import com.raulshma.grack.core.model.ConfirmationLevel
 import com.raulshma.grack.core.model.HostKeyChallenge
 import com.raulshma.grack.core.model.NetworkInterfaceInfo
 import com.raulshma.grack.core.model.NetworkPortInfo
+import com.raulshma.grack.core.model.OsCapabilities
 import com.raulshma.grack.core.model.PortForwardTunnel
 import com.raulshma.grack.core.model.RemoteFileEntry
 import com.raulshma.grack.core.model.Server
@@ -284,14 +285,23 @@ class ServersViewModel(
     fun saveServer(draft: Server, secrets: ServerSecretEdits = ServerSecretEdits()) {
         viewModelScope.launch {
             var updated = draft
+            // Capabilities describe the login user (root or not, passwordless sudo, docker
+            // access). When the SSH user changes, the stored snapshot is about someone else —
+            // a node switched from root to a normal user would keep running privileged actions
+            // bare, one switched the other way would keep wrapping them in sudo — so drop it;
+            // the poll at the end re-probes as the new user.
+            val stored = repository.getServerById(draft.id)
+            if (stored != null && stored.username != draft.username) {
+                updated = updated.copy(capabilities = OsCapabilities())
+            }
             val vaultId = draft.credentialVaultId ?: "srv_pw_${draft.id}"
             if (draft.authType == AuthType.PASSWORD && secrets.clearLoginPassword) {
                 vault.deleteSecret(vaultId)
-                updated = draft.copy(credentialVaultId = null)
+                updated = updated.copy(credentialVaultId = null)
             } else if (draft.authType == AuthType.PASSWORD && !secrets.loginPassword.isNullOrEmpty()) {
                 // Set (new node) or change (rotate): the Save action is what persists it.
                 vault.putSecret(vaultId, secrets.loginPassword)
-                updated = draft.copy(credentialVaultId = vaultId)
+                updated = updated.copy(credentialVaultId = vaultId)
             }
             // Dedicated sudo password lives at srv_sudo_<id>; there is no column — the
             // secret's existence is the state. Clearing (or leaving the mode) removes it

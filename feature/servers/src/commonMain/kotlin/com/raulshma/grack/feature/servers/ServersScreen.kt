@@ -2641,8 +2641,9 @@ private fun AddEditServerSheet(
                 Spacer(Modifier.height(8.dp))
                 when (sudoAuth) {
                     SudoAuth.NONE -> Text(
-                        text = "Root actions rely on a root login or passwordless sudo; " +
-                            "without them they run through the plain fallback.",
+                        text = "Root actions and update scans rely on a root login or passwordless " +
+                            "sudo; without either, privileged actions run unprivileged and scans " +
+                            "list a stale package index.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -2676,6 +2677,15 @@ private fun AddEditServerSheet(
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            // sudo authenticates the invoking user: on stock Debian/Mint/Pi OS
+                            // this is the login user's password, and the root account's is a
+                            // different (usually locked) credential.
+                            text = "The password sudo asks for on the node — normally the SSH login " +
+                                "user's own password, not root's.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         if (hasStoredSudoPassword) {
                             TextButton(

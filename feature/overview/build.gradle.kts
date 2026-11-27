@@ -40,6 +40,10 @@ kotlin {
         getByName("androidHostTest").dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.junit)
+            implementation(libs.kotlinx.coroutines.test)
+            implementation(libs.robolectric)
+            implementation(libs.androidx.testExt.junit)
+            implementation(libs.androidx.sqlite.bundled)
         }
     }
 }

@@ -54,6 +54,7 @@ import com.raulshma.grack.core.model.DistroFamily
 import com.raulshma.grack.core.model.Formatters
 import com.raulshma.grack.core.model.NodeUpdateReport
 import com.raulshma.grack.core.model.OsScanStatus
+import com.raulshma.grack.core.model.OsUpdateSection
 import com.raulshma.grack.core.model.Server
 import com.raulshma.grack.core.model.ServerHealth
 import com.raulshma.grack.core.model.currentTimeEpochMs
@@ -105,10 +106,13 @@ fun UpdatesCard(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            text = if (state.totalOsUpdates == 0 && state.totalContainerUpdates == 0) {
-                                "No pending updates found"
-                            } else {
-                                "${state.totalOsUpdates} OS · ${state.totalContainerUpdates} containers"
+                            // A zero is only good news when every node could actually be checked.
+                            text = when {
+                                state.hasAnyUpdates ->
+                                    "${state.totalOsUpdates} OS · ${state.totalContainerUpdates} containers"
+                                state.hasUnreliableCounts ->
+                                    "No updates found — some nodes could not be checked fully"
+                                else -> "No pending updates found"
                             },
                             style = MaterialTheme.typography.labelMedium.merge(design.monoNumericStyle),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -171,10 +175,15 @@ fun UpdatesCard(
                                 RebootRecommendedChip()
                             }
                             Text(
-                                text = if (report.scannedAtEpochMs == 0L) {
-                                    "not scanned"
-                                } else {
-                                    "${report.osUpdateCount} OS · ${report.containerUpdateCount} ctr"
+                                text = when {
+                                    report.scannedAtEpochMs == 0L -> "not scanned"
+                                    // The count is a lower bound from an old index, or no count at all: flag it in place.
+                                    report.os?.status == OsScanStatus.STALE ->
+                                        "${report.osUpdateCount}+ OS · ${report.containerUpdateCount} ctr · stale index"
+                                    report.os?.status == OsScanStatus.FAILED -> "OS scan failed"
+                                    else ->
+                                        "${report.osUpdateCount} OS · ${report.containerUpdateCount} ctr" +
+                                            if (unfinishedContainerText(report) != null) " · check incomplete" else ""
                                 },
                                 style = MaterialTheme.typography.labelSmall.merge(design.monoNumericStyle),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -366,29 +375,26 @@ private fun NodeUpdatesSection(
                 report.os?.let { os ->
                     when (os.status) {
                         OsScanStatus.OK -> {
-                            if (os.packages.isEmpty()) {
-                                SectionLine("OS packages: up to date (${familyLabel(os.family)})")
-                            } else {
-                                SectionLine("OS packages (${familyLabel(os.family)}): ${os.packages.size} pending")
-                                os.packages.take(6).forEach { pkg ->
-                                    Text(
-                                        text = "· ${pkg.packageName} ${pkg.currentVersion.orEmpty()} " +
-                                            "→ ${pkg.candidateVersion.orEmpty()}",
-                                        style = MaterialTheme.typography.bodySmall.merge(design.monoNumericStyle),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.padding(start = 8.dp),
-                                    )
-                                }
-                                if (os.packages.size > 6) {
-                                    Text(
-                                        text = "+ ${os.packages.size - 6} more packages",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(start = 8.dp),
-                                    )
-                                }
-                            }
+                            SectionLine(
+                                if (os.packages.isEmpty()) {
+                                    "OS packages (${familyLabel(os.family)}): up to date"
+                                } else {
+                                    "OS packages (${familyLabel(os.family)}): ${os.packages.size} pending"
+                                },
+                            )
+                            OsPackageList(os)
+                        }
+                        // A lower bound from an old index: usable, but never "up to date".
+                        OsScanStatus.STALE -> {
+                            SectionLine(
+                                "OS packages (${familyLabel(os.family)}): ${os.packages.size}+ pending — index not refreshed",
+                            )
+                            OsPackageList(os)
+                            Text(
+                                text = os.detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
                         }
                         OsScanStatus.UNSUPPORTED -> SectionLine("OS updates: unsupported (${os.detail})")
                         OsScanStatus.FAILED -> SectionLine("OS scan failed (${os.detail})")
@@ -398,15 +404,27 @@ private fun NodeUpdatesSection(
                 val containerUpdates = report.containers.filter {
                     it.status == ContainerUpdateStatus.UPDATE_AVAILABLE
                 }
-                val otherContainers = report.containers.filter {
-                    it.status != ContainerUpdateStatus.UPDATE_AVAILABLE
-                }
+                // Every verdict has its own count: "undetermined" (registry silent, no buildx,
+                // Podman) is neither "current" nor an update, and is never folded into either.
+                val tally = report.containerTally
+                val containerParts = listOfNotNull(
+                    tally.withUpdates.takeIf { it > 0 }?.let { "$it with updates" },
+                    tally.upToDate.takeIf { it > 0 }?.let { "$it up to date" },
+                    tally.pinnedOrLocal.takeIf { it > 0 }?.let { "$it pinned or local" },
+                    tally.undetermined.takeIf { it > 0 }?.let { "$it undetermined" },
+                )
                 if (report.containers.isEmpty()) {
                     SectionLine("Containers: nothing to check on this node")
-                } else if (containerUpdates.isEmpty()) {
-                    SectionLine("Containers: ${otherContainers.size} checked, all current or skipped")
                 } else {
-                    SectionLine("Containers: ${containerUpdates.size} with updates")
+                    SectionLine("Containers: ${containerParts.joinToString(" · ")}")
+                    // What the node said about the part it could not check.
+                    unfinishedContainerText(report)?.let { reason ->
+                        Text(
+                            text = reason,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     containerUpdates.forEach { entry ->
                         Text(
                             text = "· ${entry.containerName} (${entry.image})",
@@ -426,7 +444,10 @@ private fun NodeUpdatesSection(
                         RebootRecommendedChip()
                     }
                     val os = report.os
-                    val osPending = os != null && os.status == OsScanStatus.OK && os.packages.isNotEmpty()
+                    // A stale index still proves these packages are pending, so applying stays allowed.
+                    val osPending = os != null &&
+                        (os.status == OsScanStatus.OK || os.status == OsScanStatus.STALE) &&
+                        os.packages.isNotEmpty()
                     if (osPending && reachable) {
                         FilledTonalButton(
                             onClick = onApplyOs,
@@ -488,6 +509,31 @@ private fun NodeUpdatesSection(
         }
     }
 }
+
+/** The first [OS_PACKAGES_SHOWN] pending packages of a section, then a "+ N more" line. */
+@Composable
+private fun OsPackageList(os: OsUpdateSection) {
+    val design = LocalGlassrackDesign.current
+    os.packages.take(OS_PACKAGES_SHOWN).forEach { pkg ->
+        Text(
+            text = "· ${pkg.packageName} ${pkg.currentVersion.orEmpty()} → ${pkg.candidateVersion.orEmpty()}",
+            style = MaterialTheme.typography.bodySmall.merge(design.monoNumericStyle),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+    }
+    if (os.packages.size > OS_PACKAGES_SHOWN) {
+        Text(
+            text = "+ ${os.packages.size - OS_PACKAGES_SHOWN} more packages",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+    }
+}
+
+private const val OS_PACKAGES_SHOWN = 6
 
 @Composable
 private fun SectionLine(text: String) {
